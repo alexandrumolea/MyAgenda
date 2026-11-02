@@ -16,6 +16,8 @@ struct PenToolbar: View {
     @Bindable var pen: PenSettings
     var proxy: CanvasProxy
     var showsDrawingTools: Bool = true
+    /// Tighter spacing, so the full bar fits beside the iPad tags panel.
+    var compact = false
     var onAddText: () -> Void
     var onAddChecklist: () -> Void
     var onAddPhoto: () -> Void
@@ -26,7 +28,7 @@ struct PenToolbar: View {
     @State private var showEraserOptions = false
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: compact ? 6 : 12) {
             if showsDrawingTools {
                 inkToolButton(.pen, system: "applepencil.tip")
                 inkToolButton(.highlighter, system: "highlighter")
@@ -50,7 +52,7 @@ struct PenToolbar: View {
             iconButton("timer", action: onTimer)
             iconButton("plus.rectangle.on.rectangle", action: onAddPage)
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, compact ? 12 : 16)
         .padding(.vertical, 9)
     }
 

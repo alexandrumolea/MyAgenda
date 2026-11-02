@@ -96,8 +96,8 @@ struct ContentView: View {
         }
         .onAppear(perform: bootstrap)
         .sheet(isPresented: $showNewNotebook) {
-            NotebookEditorSheet(existing: nil) { title, hex, style in
-                createNotebook(title: title, hex: hex, style: style)
+            NotebookEditorSheet(existing: nil) { title, hex, style, paper in
+                createNotebook(title: title, hex: hex, style: style, paper: paper)
             }
         }
         .sheet(isPresented: $showEditNotebook) {
@@ -105,10 +105,19 @@ struct ContentView: View {
                 NotebookEditorSheet(
                     existing: notebook,
                     canDelete: notebooks.count > 1,
-                    onSave: { title, hex, style in
+                    onSave: { title, hex, style, paper in
                         notebook.title = title
                         notebook.accentHex = hex
                         notebook.pageStyle = style
+                        // A new paper is for the whole notebook, also the pages
+                        // that had chosen their own.
+                        if paper != notebook.paper {
+                            notebook.paper = paper
+                            for page in notebook.pages ?? [] where !page.paperRaw.isEmpty {
+                                page.paperRaw = ""
+                                page.updatedAt = .now
+                            }
+                        }
                         try? context.save()
                     },
                     onDelete: { deleteNotebook(notebook) }
@@ -136,9 +145,10 @@ struct ContentView: View {
         }
     }
 
-    private func createNotebook(title: String, hex: String, style: PageStyle) {
+    private func createNotebook(title: String, hex: String, style: PageStyle, paper: PaperColor) {
         let nextIndex = (notebooks.map(\.sortIndex).max() ?? -1) + 1
         let notebook = Notebook(title: title, accentHex: hex, pageStyle: style, sortIndex: nextIndex)
+        notebook.paper = paper
         context.insert(notebook)
         try? context.save()
         selectedNotebookID = notebook.id

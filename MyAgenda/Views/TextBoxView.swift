@@ -21,6 +21,8 @@ struct TextBoxView: UIViewRepresentable {
     var baseFontSize: CGFloat = 18
     /// The notebook's color, for the editing bar.
     var accent: Color = .accentColor
+    /// Text is stored as on white paper; dark paper shows it inverted.
+    var paper: PaperColor = .white
 
     static let defaultFont = UIFont.systemFont(ofSize: 18)
 
@@ -38,14 +40,15 @@ struct TextBoxView: UIViewRepresentable {
         tv.textContainer.lineBreakMode = .byWordWrapping
         tv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         tv.allowsEditingTextAttributes = true
-        tv.overrideUserInterfaceStyle = .light
+        tv.overrideUserInterfaceStyle = paper.interfaceStyle
         let baseFont = UIFont.systemFont(ofSize: baseFontSize)
         tv.font = baseFont
-        tv.textColor = .black
-        tv.typingAttributes = [.font: baseFont, .foregroundColor: UIColor.black]
+        tv.textColor = paper.shown(.black)
+        tv.typingAttributes = [.font: baseFont, .foregroundColor: paper.shown(.black)]
 
+        context.coordinator.paper = paper
         if let attributed = Self.attributedString(from: box.rtfData), attributed.length > 0 {
-            tv.attributedText = attributed
+            tv.attributedText = paper.shown(attributed)
         }
         context.coordinator.lastAppliedRTFData = box.rtfData
 
@@ -62,6 +65,7 @@ struct TextBoxView: UIViewRepresentable {
     func updateUIView(_ tv: UITextView, context: Context) {
         context.coordinator.onEndEditing = onEndEditing
         context.coordinator.isEditing = isEditing
+        context.coordinator.setPaper(paper)
         context.coordinator.applyRemoteTextIfNeeded(from: box.rtfData, isEditing: isEditing)
         if isEditing, !tv.isFirstResponder {
             DispatchQueue.main.async { tv.becomeFirstResponder() }
@@ -99,6 +103,8 @@ struct TextBoxView: UIViewRepresentable {
         private var endingOnPurpose = false
         weak var textView: UITextView?
         var lastAppliedRTFData = Data()
+        /// The paper the text view's colors are shown for.
+        var paper: PaperColor = .white
         private var saveTask: Task<Void, Never>?
 
         private let barState = EditBarState()
@@ -113,11 +119,26 @@ struct TextBoxView: UIViewRepresentable {
                   data != lastAppliedRTFData,
                   let textView else { return }
             if let attributed = TextBoxView.attributedString(from: data), attributed.length > 0 {
-                textView.attributedText = attributed
+                textView.attributedText = paper.shown(attributed)
             } else {
                 textView.attributedText = NSAttributedString()
             }
             lastAppliedRTFData = data
+        }
+
+        /// Another paper chosen while the text is on screen: show its colors
+        /// for the new paper (what is stored doesn't change).
+        func setPaper(_ newPaper: PaperColor) {
+            guard newPaper != paper, let tv = textView else { return }
+            let old = paper
+            paper = newPaper
+            let selection = tv.selectedRange
+            tv.attributedText = newPaper.shown(old.stored(tv.attributedText ?? NSAttributedString()))
+            tv.selectedRange = selection
+            var typing = tv.typingAttributes
+            typing[.foregroundColor] = newPaper.shown(old.stored((typing[.foregroundColor] as? UIColor) ?? .black))
+            tv.typingAttributes = typing
+            tv.overrideUserInterfaceStyle = newPaper.interfaceStyle
         }
 
         // MARK: Editing bar
@@ -162,7 +183,8 @@ struct TextBoxView: UIViewRepresentable {
             barState.isBold = traits.contains(.traitBold)
             barState.isItalic = traits.contains(.traitItalic)
             barState.isUnderline = (attrs[.underlineStyle] as? Int ?? 0) != 0
-            barState.textColor = (attrs[.foregroundColor] as? UIColor) ?? .black
+            // The bar offers white-paper colors, as they are stored.
+            barState.textColor = (attrs[.foregroundColor] as? UIColor).map(paper.stored) ?? .black
             barState.alignment = (attrs[.paragraphStyle] as? NSParagraphStyle)?.alignment ?? .left
             barState.backgroundHex = box.backgroundColorRaw
             let text = storage.string as NSString
@@ -234,8 +256,9 @@ struct TextBoxView: UIViewRepresentable {
             scheduleSave()
         }
 
-        private func setColor(_ color: UIColor) {
+        private func setColor(_ stored: UIColor) {
             guard let tv = textView else { return }
+            let color = paper.shown(stored)
             let range = tv.selectedRange
             if range.length == 0 {
                 var attrs = tv.typingAttributes
@@ -471,6 +494,7 @@ struct TextBoxView: UIViewRepresentable {
 
         private func save(_ attributed: NSAttributedString) {
             guard box.modelContext != nil else { return }
+            let attributed = paper.stored(attributed)
             let range = NSRange(location: 0, length: attributed.length)
             if let data = try? attributed.data(
                 from: range,

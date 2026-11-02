@@ -55,6 +55,9 @@ struct BallpointTuning: Equatable {
 struct InkOverlay: UIViewRepresentable {
     var isActive: Bool
     var color: UIColor
+    /// How `color` shows on the paper (inverted on dark paper), for the live
+    /// line; the committed stroke keeps `color`.
+    var previewColor: UIColor? = nil
     var baseWidth: CGFloat
     var inkType: PKInkingTool.InkType
     var ballpoint: BallpointTuning?
@@ -69,6 +72,7 @@ struct InkOverlay: UIViewRepresentable {
     func updateUIView(_ view: CustomInkView, context: Context) {
         view.isActive = isActive
         view.strokeColor = color
+        view.previewColor = previewColor
         view.baseWidth = baseWidth
         view.inkType = inkType
         view.ballpoint = ballpoint
@@ -81,6 +85,7 @@ struct InkOverlay: UIViewRepresentable {
 final class CustomInkView: UIView {
     var isActive = false
     var strokeColor: UIColor = .black
+    var previewColor: UIColor?
     var baseWidth: CGFloat = 4
     var inkType: PKInkingTool.InkType = .pen
     /// Set for the ball-pen styles: near-constant width, short round ends, raw
@@ -209,8 +214,9 @@ final class CustomInkView: UIView {
         guard !samples.isEmpty, let ctx = UIGraphicsGetCurrentContext() else { return }
         ctx.setLineCap(.round)
         ctx.setLineJoin(.round)
-        strokeColor.setStroke()
-        strokeColor.setFill()
+        let shown = previewColor ?? strokeColor
+        shown.setStroke()
+        shown.setFill()
 
         if samples.count == 1 {
             let s = samples[0]

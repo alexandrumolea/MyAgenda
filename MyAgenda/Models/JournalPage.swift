@@ -37,6 +37,8 @@ final class JournalPage {
     /// even while blank. Pages opened implicitly — today's page at launch, a
     /// day tapped in the strip — are still tidied away if left empty.
     var keepsWhenEmpty: Bool = false
+    /// This page's own paper color; empty = the notebook's.
+    var paperRaw: String = ""
 
     /// Convenience accessor over `tagsRaw`.
     var tags: [String] {
@@ -50,6 +52,11 @@ final class JournalPage {
                 .filter { !$0.isEmpty }
                 .joined(separator: "\n")
         }
+    }
+
+    /// The paper this page shows: its own, else its notebook's.
+    var paper: PaperColor {
+        PaperColor(rawValue: paperRaw) ?? notebook?.paper ?? .white
     }
 
     /// Owning notebook (relationship) + denormalized id for fast @Query filters.

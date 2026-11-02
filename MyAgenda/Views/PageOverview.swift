@@ -135,7 +135,7 @@ struct PageOverview: View {
             AsyncPageThumbnail(page: page, size: CGSize(width: 400, height: 540))
                 .aspectRatio(pageAspect, contentMode: .fit)
                 .frame(maxWidth: .infinity)
-                .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+                .background(page.paper.color, in: RoundedRectangle(cornerRadius: 12))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
@@ -183,7 +183,7 @@ private struct AsyncPageThumbnail: View {
                 Image(uiImage: image).resizable()
             } else {
                 Rectangle()
-                    .fill(Color.white)
+                    .fill(page.paper.color)
                     .overlay {
                         ProgressView().controlSize(.small)
                     }

@@ -17,6 +17,9 @@ struct PageCanvasView: UIViewRepresentable {
     let toolKind: PenSettings.ToolKind
     var proxy: CanvasProxy
     var isActive: Bool
+    /// Dark paper shows the ink inverted (PencilKit's dark mode); the strokes
+    /// are still stored with their white-paper colors.
+    var paper: PaperColor = .white
     /// Apple Pencil Pro squeeze.
     var onSqueeze: () -> Void = {}
     /// Apple Pencil double-tap.
@@ -57,9 +60,9 @@ struct PageCanvasView: UIViewRepresentable {
         doubleTap.cancelsTouchesInView = false
         doubleTap.delegate = context.coordinator
         canvas.addGestureRecognizer(doubleTap)
-        // Keep the page in light appearance so dark ink (black) always renders
-        // correctly on the white paper, regardless of system dark mode.
-        canvas.overrideUserInterfaceStyle = .light
+        // The paper decides the appearance, not the system: black ink stays
+        // black on light paper even in dark mode, and turns white on dark paper.
+        canvas.overrideUserInterfaceStyle = paper.interfaceStyle
 
         if let drawing = try? PKDrawing(data: page.drawingData) {
             canvas.drawing = drawing
@@ -75,6 +78,7 @@ struct PageCanvasView: UIViewRepresentable {
     func updateUIView(_ canvas: PKCanvasView, context: Context) {
         canvas.tool = tool
         canvas.drawingPolicy = drawingPolicy
+        canvas.overrideUserInterfaceStyle = paper.interfaceStyle
         context.coordinator.onSqueeze = onSqueeze
         context.coordinator.onDoubleTap = onDoubleTap
         context.coordinator.onFingerDoubleTap = onFingerDoubleTap

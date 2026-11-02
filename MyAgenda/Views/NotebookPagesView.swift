@@ -86,6 +86,8 @@ struct NotebookPagesView: View {
             .combined(with: .offset(x: 48))
     )
     @State private var editingTextBoxID: UUID?
+    /// A text or checklist is being moved: the page doesn't scroll meanwhile.
+    @State private var boxLifted = false
     /// iPhone: the box just started by a tap, scrolled into view.
     @State private var revealTextBoxID: UUID?
     @State private var showTagsSidebar = false
@@ -138,11 +140,48 @@ struct NotebookPagesView: View {
     /// On iPhone the page is view-only (no drawing) and fit-to-width.
     private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
     private let phoneLogicalWidth: CGFloat = 1024   // iPad-like page width
+    static let tagsPanelWidth: CGFloat = 280
+    /// iPad: room the bars leave on the left for the open tags panel.
+    private var panelInset: CGFloat { showTagsSidebar && !isPhone ? Self.tagsPanelWidth : 0 }
 
     var body: some View {
-        HStack(spacing: 0) {
-            // iPad: side panel. iPhone: presented as a sheet (below) so it isn't
-            // squeezed on the narrow screen.
+        ZStack {
+            pageArea
+                // The bar floats over the page; the page scrolls underneath it
+                // (see `pageTopInset`), like any iOS scroll view under glass.
+                .overlay(alignment: .top) {
+                    CalendarOverlay(
+                        reveal: calendarReveal,
+                        selectedDay: selectedPage?.day ?? .now,
+                        markedDays: noteDays,
+                        topInset: topRowInset + Self.barHeight + 6
+                    ) { day in
+                        goToDay(day)
+                        calendarReveal.settle(open: false)
+                    }
+                    .padding(.leading, panelInset)
+                }
+                .overlay(alignment: .topTrailing) { topRow }
+                .overlay(alignment: .top) {
+                    if topBarHidden && showsMiniClock {
+                        miniClock
+                            .transition(.scale(scale: 0.7, anchor: .top).combined(with: .opacity))
+                    }
+                }
+                .animation(Self.liquid, value: topBarHidden)
+                .animation(Self.liquid, value: showsMiniClock)
+                .animation(Self.liquid, value: safeTop)
+                // The paper always runs edge to edge, in both modes, so hiding
+                // the bar never resizes the page (and its canvas) mid-animation.
+                // The status bar simply sits over the paper, as in any iOS app.
+                .ignoresSafeArea(.container, edges: .vertical)
+
+            bottomToolbar
+        }
+        // iPad: the panel floats over the page, so opening it never resizes the
+        // page (and its canvas). iPhone: presented as a sheet (below) so it
+        // isn't squeezed on the narrow screen.
+        .overlay(alignment: .leading) {
             if showTagsSidebar && !isPhone {
                 TagsSidebar(
                     page: selectedPage,
@@ -150,43 +189,24 @@ struct NotebookPagesView: View {
                     onJump: { selection = $0 },
                     onClose: { withAnimation(.snappy(duration: 0.28)) { showTagsSidebar = false } }
                 )
-                .frame(width: 280)
-                .background(Color(.secondarySystemBackground))
+                .frame(width: Self.tagsPanelWidth)
+                .frame(maxHeight: .infinity)
+                // Same as the inset-grouped list, so header and list read as one
+                // surface; unlike secondarySystemBackground it stays apart from
+                // dark paper. It runs under the status bar and home indicator and
+                // takes the touches there, so none reach the page underneath. The
+                // shadow sits on it alone: on the whole panel it would render the
+                // list offscreen on every scroll frame.
+                .background {
+                    Color(.systemGroupedBackground)
+                        .shadow(color: .black.opacity(0.15), radius: 12, x: 3)
+                        .ignoresSafeArea()
+                }
+                .overlay(alignment: .trailing) {
+                    Rectangle().fill(Color(.opaqueSeparator)).frame(width: 1)
+                        .ignoresSafeArea()
+                }
                 .transition(.move(edge: .leading).combined(with: .opacity))
-                Divider()
-            }
-
-            ZStack {
-                pageArea
-                    // The bar floats over the page; the page scrolls underneath it
-                    // (see `pageTopInset`), like any iOS scroll view under glass.
-                    .overlay(alignment: .top) {
-                        CalendarOverlay(
-                            reveal: calendarReveal,
-                            selectedDay: selectedPage?.day ?? .now,
-                            markedDays: noteDays,
-                            topInset: topRowInset + Self.barHeight + 6
-                        ) { day in
-                            goToDay(day)
-                            calendarReveal.settle(open: false)
-                        }
-                    }
-                    .overlay(alignment: .topTrailing) { topRow }
-                    .overlay(alignment: .top) {
-                        if topBarHidden && showsMiniClock {
-                            miniClock
-                                .transition(.scale(scale: 0.7, anchor: .top).combined(with: .opacity))
-                        }
-                    }
-                    .animation(Self.liquid, value: topBarHidden)
-                    .animation(Self.liquid, value: showsMiniClock)
-                    .animation(Self.liquid, value: safeTop)
-                    // The paper always runs edge to edge, in both modes, so hiding
-                    // the bar never resizes the page (and its canvas) mid-animation.
-                    // The status bar simply sits over the paper, as in any iOS app.
-                    .ignoresSafeArea(.container, edges: .vertical)
-
-                bottomToolbar
             }
         }
         .tint(notebook.accentColor)
@@ -198,6 +218,9 @@ struct NotebookPagesView: View {
             safeTop = top
         }
         .animation(.snappy(duration: 0.28), value: showTagsSidebar)
+        // Dark paper turns the whole app dark (bars, menus, status bar), so it
+        // all reads as one inverted page; other paper leaves it to the system.
+        .preferredColorScheme(selectedPaper.isDark ? .dark : nil)
         .sheet(isPresented: Binding(
             get: { isPhone && showTagsSidebar },
             set: { if isPhone { showTagsSidebar = $0 } }
@@ -377,6 +400,7 @@ struct NotebookPagesView: View {
             }
         }
         .padding(.horizontal, Self.barInset)
+        .padding(.leading, panelInset)
         .padding(.top, topRowInset)
     }
 
@@ -579,13 +603,34 @@ struct NotebookPagesView: View {
                 action("Redenumește pagina", "character.cursor.ibeam") {
                     renameText = page.title
                     showRename = true
-                }
+                },
+                paperMenu(for: page, action: action)
             ]))
             sections.append(UIMenu(options: .displayInline, children: [
                 action("Șterge pagina", "trash", attributes: .destructive) { deletePage(page) }
             ]))
         }
         return sections
+    }
+
+    /// Paper color, for this page or for the whole notebook.
+    private func paperMenu(for page: JournalPage,
+                           action: (String, String, UIMenuElement.Attributes, Bool,
+                                    @escaping () -> Void) -> UIAction) -> UIMenu {
+        let pageChoices = [action("Ca tot caietul", "book.closed", [], page.paperRaw.isEmpty) {
+            setPaper(nil, of: page)
+        }] + PaperColor.allCases.map { paper in
+            action(paper.label, paper.symbol, [], page.paperRaw == paper.rawValue) {
+                setPaper(paper, of: page)
+            }
+        }
+        let notebookChoices = PaperColor.allCases.map { paper in
+            action(paper.label, paper.symbol, [], notebook.paper == paper) { setNotebookPaper(paper) }
+        }
+        return UIMenu(title: "Hârtie", image: UIImage(systemName: paper(of: page).symbol), children: [
+            UIMenu(title: "Pagina aceasta", options: .displayInline, children: pageChoices),
+            UIMenu(title: "Tot caietul", options: .displayInline, children: notebookChoices)
+        ])
     }
 
     // MARK: - Page area
@@ -605,9 +650,11 @@ struct NotebookPagesView: View {
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
-            // Same white as the paper, so the area under the floating bar reads
-            // as the page continuing, not as a margin.
-            .background(Color.white)
+            // Same color as the paper, so the area under the floating bar reads
+            // as the page continuing, not as a margin. Also under the keyboard:
+            // on iPhone the page stops above it, and the editing bar's clear
+            // strip showed the window (black in dark mode) instead of paper.
+            .background { selectedPaper.color.ignoresSafeArea() }
             // iPad: don't push the page up when the keyboard appears — text
             // stays put. iPhone: make room, so a box tapped low stays visible.
             .ignoresSafeArea(.keyboard, edges: isPhone ? [] : .bottom)
@@ -643,6 +690,7 @@ struct NotebookPagesView: View {
                     // While editing, the bar above the keyboard is the only one.
                     showsToolbar: editingTextBoxID == nil && editingChecklistID == nil,
                     toolbarHidden: toolbarHidden, toolsDocked: toolsDocked,
+                    leadingInset: panelInset,
                     onAddText: addTextBoxOnFreeSpot,
                     onAddChecklist: addChecklistOnFreeSpot,
                     onAddPhoto: { showPhotoPicker = true },
@@ -671,10 +719,11 @@ struct NotebookPagesView: View {
                 // A box just started by a tap, while it is being written.
                 let revealBox = textBoxes(of: page)
                     .first { $0.id == revealTextBoxID && $0.id == editingTextBoxID }
-                // At least a full screen of paper, so every tap lands on the page;
-                // and a screen below a new box, so it can scroll above the keyboard.
+                // More than a screen of paper, as on iPad, so the page always
+                // scrolls and every tap lands on it; and a screen below a new box,
+                // so it can scroll above the keyboard.
                 let logicalH = max(CGFloat(page.canvasHeight), CGFloat(page.contentHeight),
-                                   logicalW * 1.3, viewport.height / fitScale,
+                                   logicalW * 1.3, viewport.height * 1.35 / fitScale,
                                    revealBox.map { CGFloat($0.y) * logicalW + viewport.height / scale } ?? 0)
                 let pageSize = CGSize(width: logicalW, height: logicalH)
 
@@ -710,6 +759,21 @@ struct NotebookPagesView: View {
                     // Zoomed out, content smaller than the screen stays at the top
                     // instead of being centred (which left a band above the page).
                     .defaultScrollAnchor(.topLeading, for: .alignment)
+                    // Beyond the page (zoomed out, under the bar), the same paper.
+                    .background(paper(of: page).color)
+                    .scrollDisabled(boxLifted)
+                    // Near the bottom, the page grows, as on iPad: there is always
+                    // more paper below. Only once you've scrolled, so just opening
+                    // a page never changes it.
+                    .onScrollGeometryChange(for: Bool.self) { scrollGeo in
+                        scrollGeo.contentOffset.y + scrollGeo.contentInsets.top > 20
+                            && scrollGeo.contentOffset.y + scrollGeo.containerSize.height
+                                > scrollGeo.contentSize.height - 140
+                    } action: { _, atBottom in
+                        if atBottom {
+                            growPage(page, currentHeight: logicalH, viewport: viewport.height / scale)
+                        }
+                    }
                     .simultaneousGesture(
                         MagnifyGesture()
                             .updating($phonePinch) { value, state, _ in state = value.magnification }
@@ -728,6 +792,9 @@ struct NotebookPagesView: View {
                         .frame(width: pageWidth, height: pageHeight, alignment: .topLeading)
                         .padding(.top, pageTopInset)
                 }
+                // Under the bar, the same paper (also while swiping between pages).
+                .background(paper(of: page).color)
+                .scrollDisabled(boxLifted)
                 .onScrollGeometryChange(for: Bool.self) { scrollGeo in
                     scrollGeo.contentOffset.y + scrollGeo.containerSize.height
                         > scrollGeo.contentSize.height - 140
@@ -747,8 +814,9 @@ struct NotebookPagesView: View {
     @ViewBuilder
     private func pageLayers(for page: JournalPage, pageSize: CGSize,
                             textSize: CGFloat = 18, displayScale: CGFloat = 1) -> some View {
+        let paper = paper(of: page)
         ZStack(alignment: .topLeading) {
-            PaperBackground(style: notebook.pageStyle)
+            PaperBackground(style: notebook.pageStyle, paper: paper)
 
             PageCanvasView(
                 page: page,
@@ -756,6 +824,7 @@ struct NotebookPagesView: View {
                 toolKind: pen.tool,
                 proxy: proxy,
                 isActive: page.id == selection,
+                paper: paper,
                 onSqueeze: { pen.toggleEraser() },
                 onDoubleTap: { pen.toggleLasso() },
                 // iPad: double tap the bare page to start writing right there.
@@ -769,6 +838,7 @@ struct NotebookPagesView: View {
             InkOverlay(
                 isActive: !isPhone && pen.tool == .pen,
                 color: UIColor(pen.penColor),
+                previewColor: paper.shown(UIColor(pen.penColor)),
                 baseWidth: pen.width,
                 inkType: pen.penInk.inkType,
                 ballpoint: pen.penInk.ballpointTuning,
@@ -848,6 +918,7 @@ struct NotebookPagesView: View {
                     scale: displayScale,
                     fontSize: max(19, textSize),
                     editTapCount: isPhone ? 1 : 2,
+                    paper: paper,
                     accent: notebook.accentColor,
                     isEditing: editingChecklistID == box.id,
                     onSetEditing: { editing in
@@ -856,7 +927,7 @@ struct NotebookPagesView: View {
                     },
                     onMove: { nx, ny in box.x = nx; box.y = ny; page.updatedAt = .now },
                     onResize: { wf in box.widthFraction = wf; page.updatedAt = .now },
-                    onLift: { suppressPaste = true },
+                    onLift: liftBox,
                     onDelete: { deleteChecklist(box, on: page) }
                 )
             }
@@ -872,6 +943,7 @@ struct NotebookPagesView: View {
                     textSize: textSize,
                     scale: displayScale,
                     accent: notebook.accentColor,
+                    paper: paper,
                     // iPhone: one tap edits (double tap is for iPad, where a
                     // single finger tap is free for other things).
                     editTapCount: isPhone ? 1 : 2,
@@ -888,14 +960,13 @@ struct NotebookPagesView: View {
                         box.widthFraction = wf; box.updatedAt = .now
                         page.updatedAt = .now
                     },
-                    // Holding a text box must not also paste on the page.
-                    onLift: { suppressPaste = true }
+                    onLift: liftBox
                 )
             }
         }
-        // The paper is always white, so keep overlays (checklist, text) in light
-        // mode — otherwise SwiftUI's .primary is white in dark mode and vanishes.
-        .environment(\.colorScheme, .light)
+        // Overlays (checklist, text) follow the paper, not the system: on white
+        // paper in dark mode SwiftUI's .primary would be white and vanish.
+        .environment(\.colorScheme, paper.colorScheme)
         .contentShape(Rectangle())
         // A tap anywhere outside the selected photo deselects it. Simultaneous,
         // so it never gets in the way of the canvas or the page's other layers.
@@ -917,6 +988,38 @@ struct NotebookPagesView: View {
                     }
                 }
         )
+    }
+
+    private var selectedPaper: PaperColor { selectedPage.map(paper(of:)) ?? notebook.paper }
+
+    /// The page's own paper, else this notebook's.
+    private func paper(of page: JournalPage) -> PaperColor {
+        PaperColor(rawValue: page.paperRaw) ?? notebook.paper
+    }
+
+    /// The same as the notebook's is stored as "none", so the page follows
+    /// the notebook if that changes later.
+    private func setPaper(_ paper: PaperColor?, of page: JournalPage) {
+        page.paperRaw = paper == nil || paper == notebook.paper ? "" : paper!.rawValue
+        page.updatedAt = .now
+        try? context.save()
+    }
+
+    /// The whole notebook: every page, including those with their own color.
+    private func setNotebookPaper(_ paper: PaperColor) {
+        notebook.paper = paper
+        for page in pages where !page.paperRaw.isEmpty {
+            page.paperRaw = ""
+            page.updatedAt = .now
+        }
+        try? context.save()
+    }
+
+    /// A text or checklist held to be moved: the page stays still under the
+    /// finger until it is let go, and the hold must not also paste on the page.
+    private func liftBox(_ lifted: Bool) {
+        if lifted { suppressPaste = true }
+        boxLifted = lifted
     }
 
     private func textBoxes(of page: JournalPage) -> [TextBox] {
@@ -1238,16 +1341,18 @@ private struct TextBoxContainer: View {
     /// divided by it and the controls counter-scaled, so they keep real size.
     var scale: CGFloat = 1
     var accent: Color = .accentColor
+    var paper: PaperColor = .white
     var editTapCount: Int = 2
     var onBeginEdit: () -> Void
     var onEndEdit: () -> Void
     var onMove: (Double, Double) -> Void
     var onResize: (Double) -> Void
-    var onLift: () -> Void
+    /// Held long enough to move (true), then let go (false).
+    var onLift: (Bool) -> Void
 
-    @GestureState private var dragOffset: CGSize = .zero
+    @State private var dragOffset: CGSize = .zero
     /// Held long enough to move.
-    @GestureState private var isLifted = false
+    @State private var isLifted = false
     @State private var widthDrag: CGFloat = 0
 
     var body: some View {
@@ -1262,7 +1367,7 @@ private struct TextBoxContainer: View {
         // No border, even while editing: the text sits directly on the paper,
         // with the background color only if one was chosen.
         TextBoxView(box: box, isEditing: isEditing, onEndEditing: onEndEdit,
-                    baseFontSize: textSize, accent: accent)
+                    baseFontSize: textSize, accent: accent, paper: paper)
             .frame(width: width, alignment: .topLeading)
             .frame(minHeight: isEditing ? 40 : 0, alignment: .topLeading)
             .background(RoundedRectangle(cornerRadius: 8).fill(backgroundFill))
@@ -1273,8 +1378,8 @@ private struct TextBoxContainer: View {
             .animation(.snappy(duration: 0.18), value: isLifted)
             .offset(x: baseX + dragOffset.width, y: baseY + dragOffset.height)
             .onChange(of: isLifted) { _, lifted in
+                onLift(lifted)
                 guard lifted else { return }
-                onLift()
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             }
     }
@@ -1288,29 +1393,21 @@ private struct TextBoxContainer: View {
         Color.clear
             .contentShape(Rectangle())
             .onTapGesture(count: editTapCount) { onBeginEdit() }
-            .gesture(
-                // Press and hold, then drag: a plain drag over text scrolls the
-                // page instead of carrying the text along. Measured in global
-                // space so the offset we apply doesn't feed back into the
-                // gesture and make the box jitter while moving.
-                LongPressGesture(minimumDuration: 0.35)
-                    .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .global))
-                    .updating($isLifted) { value, state, _ in
-                        if case .second(true, _) = value { state = true }
-                    }
-                    .updating($dragOffset) { value, state, _ in
-                        guard case .second(true, let drag?) = value else { return }
-                        state = CGSize(width: drag.translation.width / scale,
-                                       height: drag.translation.height / scale)
-                    }
-                    .onEnded { value in
-                        guard case .second(true, let v?) = value else { return }
-                        let nx = (baseX + v.translation.width / scale) / pageSize.width
-                        let ny = (baseY + v.translation.height / scale) / pageSize.width
-                        let maxY = Double((pageSize.height - 20) / pageSize.width)
-                        onMove(min(max(Double(nx), 0), 0.98), min(max(Double(ny), 0), maxY))
-                    }
-            )
+            // Press and hold, then drag: a plain drag over text scrolls the
+            // page instead of carrying the text along.
+            .gesture(HoldToMoveGesture(
+                onLift: { isLifted = $0 },
+                onChange: { moved in
+                    dragOffset = CGSize(width: moved.width / scale, height: moved.height / scale)
+                },
+                onEnd: { moved in
+                    let nx = (baseX + moved.width / scale) / pageSize.width
+                    let ny = (baseY + moved.height / scale) / pageSize.width
+                    let maxY = Double((pageSize.height - 20) / pageSize.width)
+                    onMove(min(max(Double(nx), 0), 0.98), min(max(Double(ny), 0), maxY))
+                    dragOffset = .zero
+                }
+            ))
     }
 
     @ViewBuilder private func resizeHandle(width: CGFloat) -> some View {

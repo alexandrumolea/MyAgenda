@@ -112,6 +112,8 @@ struct BottomToolbarLayer: View {
     let showsToolbar: Bool
     let toolbarHidden: Bool
     let toolsDocked: Bool
+    /// iPad: width of the open tags panel, kept clear on the left.
+    var leadingInset: CGFloat = 0
     var onAddText: () -> Void
     var onAddChecklist: () -> Void
     var onAddPhoto: () -> Void
@@ -130,6 +132,7 @@ struct BottomToolbarLayer: View {
             ZStack(alignment: .bottom) {
                 if !toolbarHidden && showsToolbar {
                     PenToolbar(pen: pen, proxy: proxy, showsDrawingTools: !isPhone,
+                               compact: leadingInset > 0,
                                onAddText: onAddText, onAddChecklist: onAddChecklist,
                                onAddPhoto: onAddPhoto, onAddPage: onAddPage, onTimer: onTimer)
                         .glassEffect(.regular.interactive(), in: .capsule)
@@ -160,6 +163,10 @@ struct BottomToolbarLayer: View {
                 }
             }
             .frame(maxWidth: .infinity)
+            // Shifted inside the hosted content, so the hit regions move with it.
+            .padding(.leading, leadingInset)
+            // The host doesn't inherit the outer transaction.
+            .animation(.snappy(duration: 0.28), value: leadingInset)
         }
         // Fixed height, so the hosting view never resizes mid-flow and clips
         // the pills while they drain or pour.

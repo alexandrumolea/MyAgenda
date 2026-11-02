@@ -19,7 +19,7 @@ enum DrawingThumbnailRenderer {
     private nonisolated(unsafe) static let cache = NSCache<NSString, UIImage>()
 
     /// Bump when the drawing code changes, so old thumbnails are redone.
-    private static let renderVersion = 4
+    private static let renderVersion = 5
 
     /// Hash of each page's drawing, so megabytes of ink are only re-hashed
     /// after the page changes.
@@ -33,6 +33,7 @@ enum DrawingThumbnailRenderer {
         var images: [ImageSnapshot]
         var texts: [TextSnapshot]
         var checklists: [ChecklistSnapshot]
+        var paper: PaperColor
         var size: CGSize
     }
 
@@ -66,7 +67,7 @@ enum DrawingThumbnailRenderer {
         var hash = SHA256()
         func add(_ text: String) { hash.update(data: Data(text.utf8)) }
 
-        add("v\(renderVersion)|\(drawingHash(of: page))|\(page.canvasWidth)x\(page.canvasHeight)")
+        add("v\(renderVersion)|\(drawingHash(of: page))|\(page.canvasWidth)x\(page.canvasHeight)|\(page.paper.rawValue)")
         for box in (page.imageBoxes ?? []).sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
             add("i\(box.id)|\(box.x)|\(box.y)|\(box.widthFraction)|\(box.aspectRatio)|\(box.cropRect)")
         }
@@ -131,6 +132,7 @@ enum DrawingThumbnailRenderer {
                     widthFraction: $0.widthFraction
                 )
             },
+            paper: page.paper,
             size: size
         )
     }
@@ -197,11 +199,12 @@ enum DrawingThumbnailRenderer {
 
         let renderer = UIGraphicsImageRenderer(size: size)
         return renderer.image { ctx in
-            // Render in LIGHT mode so dark ink (black) stays dark on the white
-            // paper — PencilKit otherwise adapts ink color to dark mode and the
-            // strokes become invisible on a white background.
-            UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
-                UIColor.white.setFill()
+            // Render in the paper's appearance, not the system's: PencilKit
+            // adapts ink to it, so black ink stays black on light paper and
+            // turns white on dark paper, as on the page.
+            let paper = snapshot.paper
+            UITraitCollection(userInterfaceStyle: paper.interfaceStyle).performAsCurrent {
+                paper.uiColor.setFill()
                 ctx.fill(CGRect(origin: .zero, size: size))
 
                 let scale = size.width / pageW
@@ -229,8 +232,9 @@ enum DrawingThumbnailRenderer {
                 }
 
                 for box in snapshot.texts {
-                    guard let attributed = TextBoxView.attributedString(from: box.rtfData),
-                          attributed.length > 0 else { continue }
+                    guard let stored = TextBoxView.attributedString(from: box.rtfData),
+                          stored.length > 0 else { continue }
+                    let attributed = paper.shown(stored)
                     let bx = CGFloat(box.x) * pageW + 6      // the text view's inset
                     let by = CGFloat(box.y) * pageW + 6
                     guard by < visibleHeight else { continue }
@@ -248,7 +252,7 @@ enum DrawingThumbnailRenderer {
                 }
 
                 for box in snapshot.checklists {
-                    draw(box, pageWidth: pageW, visibleHeight: visibleHeight, in: ctx.cgContext)
+                    draw(box, paper: paper, pageWidth: pageW, visibleHeight: visibleHeight, in: ctx.cgContext)
                 }
 
                 ctx.cgContext.restoreGState()
@@ -257,7 +261,7 @@ enum DrawingThumbnailRenderer {
     }
 
     /// Same look as on the page: circles, text, optional tinted background.
-    nonisolated private static func draw(_ box: ChecklistSnapshot, pageWidth: CGFloat,
+    nonisolated private static func draw(_ box: ChecklistSnapshot, paper: PaperColor, pageWidth: CGFloat,
                                          visibleHeight: CGFloat, in context: CGContext) {
         let fontSize: CGFloat = 19
         let rowHeight = ceil(fontSize * 1.2) + 6
@@ -277,7 +281,7 @@ enum DrawingThumbnailRenderer {
         let font = UIFont.systemFont(ofSize: fontSize)
         for (index, item) in box.items.enumerated() {
             let y = originY + padding + CGFloat(index) * rowHeight
-            let color: UIColor = item.checked ? .systemGreen : .black
+            let color: UIColor = item.checked ? .systemGreen : paper.shown(.black)
             let circle = CGRect(x: originX + padding, y: y + 2, width: fontSize - 2, height: fontSize - 2)
             if item.checked {
                 color.setFill()

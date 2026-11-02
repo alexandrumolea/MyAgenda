@@ -21,18 +21,21 @@ struct ChecklistBoxContainer: View {
     var scale: CGFloat = 1
     var fontSize: CGFloat = 19
     var editTapCount: Int = 2
+    /// Items are black on light paper and white on dark paper.
+    var paper: PaperColor = .white
     var accent: Color = .accentColor
     var isEditing: Bool
     var onSetEditing: (Bool) -> Void
     var onMove: (Double, Double) -> Void
     var onResize: (Double) -> Void
-    var onLift: () -> Void
+    /// Held long enough to move (true), then let go (false).
+    var onLift: (Bool) -> Void
     var onDelete: () -> Void
 
     @Environment(\.modelContext) private var context
-    @GestureState private var dragOffset: CGSize = .zero
+    @State private var dragOffset: CGSize = .zero
     /// Held long enough to move.
-    @GestureState private var isLifted = false
+    @State private var isLifted = false
     @State private var widthDelta: CGFloat = 0
     @State private var draft: [ChecklistItem] = []
     @State private var focusedItem: UUID?
@@ -65,8 +68,8 @@ struct ChecklistBoxContainer: View {
             .animation(.snappy(duration: 0.18), value: isLifted)
             .offset(x: baseX + dragOffset.width, y: baseY + dragOffset.height)
             .onChange(of: isLifted) { _, lifted in
+                onLift(lifted)
                 guard lifted else { return }
-                onLift()
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             }
             .onAppear { if isEditing { beginDraft() } }
@@ -115,7 +118,8 @@ struct ChecklistBoxContainer: View {
                     text: draftBinding(item.id),
                     isFocused: focusedItem == item.id,
                     fontSize: fontSize,
-                    textColor: item.checked ? UIColor.systemGreen : UIColor.black,
+                    textColor: item.checked ? UIColor.systemGreen : paper.shown(.black),
+                    interfaceStyle: paper.interfaceStyle,
                     accessory: bar,
                     onReturn: { onReturn(item.id) },
                     onBackspaceWhenEmpty: { backspace(item.id) },
@@ -161,24 +165,20 @@ struct ChecklistBoxContainer: View {
     }
 
     /// Press and hold, then drag, exactly like text: a plain drag scrolls.
-    private func moveGesture(baseX: CGFloat, baseY: CGFloat) -> some Gesture {
-        LongPressGesture(minimumDuration: 0.35)
-            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .global))
-            .updating($isLifted) { value, state, _ in
-                if case .second(true, _) = value { state = true }
-            }
-            .updating($dragOffset) { value, state, _ in
-                guard case .second(true, let drag?) = value else { return }
-                state = CGSize(width: drag.translation.width / scale,
-                               height: drag.translation.height / scale)
-            }
-            .onEnded { value in
-                guard case .second(true, let v?) = value else { return }
-                let nx = (baseX + v.translation.width / scale) / pageSize.width
-                let ny = (baseY + v.translation.height / scale) / pageSize.width
+    private func moveGesture(baseX: CGFloat, baseY: CGFloat) -> HoldToMoveGesture {
+        HoldToMoveGesture(
+            onLift: { isLifted = $0 },
+            onChange: { moved in
+                dragOffset = CGSize(width: moved.width / scale, height: moved.height / scale)
+            },
+            onEnd: { moved in
+                let nx = (baseX + moved.width / scale) / pageSize.width
+                let ny = (baseY + moved.height / scale) / pageSize.width
                 let maxY = Double((pageSize.height - 20) / pageSize.width)
                 onMove(min(max(Double(nx), 0), 0.97), min(max(Double(ny), 0), maxY))
+                dragOffset = .zero
             }
+        )
     }
 
     // MARK: - Draft / mutations
@@ -306,6 +306,7 @@ private struct ChecklistItemField: UIViewRepresentable {
     var isFocused: Bool
     var fontSize: CGFloat
     var textColor: UIColor
+    var interfaceStyle: UIUserInterfaceStyle = .light
     var accessory: UIView?
     var onReturn: () -> Void
     var onBackspaceWhenEmpty: () -> Void
@@ -318,7 +319,7 @@ private struct ChecklistItemField: UIViewRepresentable {
         tf.textColor = textColor
         tf.text = text
         tf.returnKeyType = .next
-        tf.overrideUserInterfaceStyle = .light
+        tf.overrideUserInterfaceStyle = interfaceStyle
         tf.inputAccessoryView = accessory
         tf.inputAssistantItem.trailingBarButtonGroups = []
         tf.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -331,6 +332,7 @@ private struct ChecklistItemField: UIViewRepresentable {
         context.coordinator.parent = self
         if tf.text != text { tf.text = text }
         tf.textColor = textColor
+        tf.overrideUserInterfaceStyle = interfaceStyle
         // Only become first responder; never explicitly resign — that keeps the
         // keyboard up when focus moves between rows (no flicker). Doing this
         // synchronously (not via async) makes the previous row grab focus before
@@ -369,10 +371,10 @@ private struct ChecklistItemField: UIViewRepresentable {
     }
 }
 
-/// Applies a gesture only when enabled.
-private struct EnabledGesture<G: Gesture>: ViewModifier {
+/// Applies the move gesture only when enabled.
+private struct EnabledGesture: ViewModifier {
     let enabled: Bool
-    let gesture: G
+    let gesture: HoldToMoveGesture
     func body(content: Content) -> some View {
         if enabled { content.gesture(gesture) } else { content }
     }

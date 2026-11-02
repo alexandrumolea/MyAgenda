@@ -15,6 +15,8 @@ final class Notebook {
     var title: String = "Agendă"
     var accentHex: String = "#0A84FF"
     var pageStyleRaw: String = PageStyle.dots.rawValue
+    /// Paper color of every page that doesn't choose its own.
+    var paperRaw: String = PaperColor.white.rawValue
     var sortIndex: Int = 0
     var createdAt: Date = Date.now
 
@@ -36,6 +38,11 @@ final class Notebook {
     var pageStyle: PageStyle {
         get { PageStyle(rawValue: pageStyleRaw) ?? .dots }
         set { pageStyleRaw = newValue.rawValue }
+    }
+
+    var paper: PaperColor {
+        get { PaperColor(rawValue: paperRaw) ?? .white }
+        set { paperRaw = newValue.rawValue }
     }
 
     var accentColor: Color { Color(hex: accentHex) ?? .blue }
