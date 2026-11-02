@@ -4,7 +4,7 @@
 //
 //  A pinch-to-open page overview: a full-screen grid of large page thumbnails
 //  so you see as many pages as possible at a glance. Tap one to jump. Pinch out
-//  (or "Gata") closes.
+//  (or "Gata") closes. The notebook's tags, when it has any, filter the grid.
 //
 
 import SwiftUI
@@ -17,13 +17,41 @@ struct PageOverview: View {
     var onDelete: (JournalPage) -> Void
     var onClose: () -> Void
 
+    /// The tag chosen in the row of chips; nil shows every page.
+    @State private var chosenTag: String?
+
     private let pageAspect: CGFloat = 0.74   // width / height
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: 270, maximum: 360), spacing: 24)]
     }
 
+    /// Each tag once, however it was capitalized on each page.
+    private var notebookTags: [String] {
+        var seen = Set<String>()
+        return pages.flatMap(\.tags)
+            .filter { seen.insert($0.lowercased()).inserted }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    /// The chosen tag, while a page still has it (it may be removed on another
+    /// device, or go with the last page that had it).
+    private var activeTag: String? {
+        guard let chosenTag else { return nil }
+        return notebookTags.first { Self.same($0, chosenTag) }
+    }
+
+    private var shownPages: [JournalPage] {
+        guard let activeTag else { return pages }
+        return pages.filter { page in page.tags.contains { Self.same($0, activeTag) } }
+    }
+
+    private static func same(_ a: String, _ b: String) -> Bool {
+        a.caseInsensitiveCompare(b) == .orderedSame
+    }
+
     var body: some View {
+        let shown = shownPages
         ZStack {
             Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
 
@@ -32,7 +60,7 @@ struct PageOverview: View {
                     Text("Pagini")
                         .font(.title3.weight(.semibold))
                     Spacer()
-                    Text("\(pages.count) pagini")
+                    Text(shown.count == 1 ? "1 pagină" : "\(shown.count) pagini")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     Button("Gata") { onClose() }
@@ -42,10 +70,12 @@ struct PageOverview: View {
                 .padding(.horizontal, 24)
                 .padding(.vertical, 14)
 
+                if !notebookTags.isEmpty { tagFilter }
+
                 ScrollViewReader { proxy in
                     ScrollView(.vertical, showsIndicators: true) {
                         LazyVGrid(columns: columns, spacing: 22) {
-                            ForEach(pages) { page in
+                            ForEach(shown) { page in
                                 cell(page).id(page.id)
                             }
                         }
@@ -56,6 +86,11 @@ struct PageOverview: View {
                             proxy.scrollTo(selection, anchor: .center)
                         }
                     }
+                    .onChange(of: activeTag) {
+                        let pagesLeft = shownPages
+                        let target = pagesLeft.first { $0.id == selection } ?? pagesLeft.first
+                        if let target { proxy.scrollTo(target.id, anchor: .center) }
+                    }
                 }
             }
         }
@@ -64,6 +99,34 @@ struct PageOverview: View {
                 if value.magnification > 1.25 { onClose() }
             }
         )
+    }
+
+    private var tagFilter: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                chip("Toate", isOn: activeTag == nil) { chosenTag = nil }
+                ForEach(notebookTags, id: \.self) { tag in
+                    let isOn = activeTag.map { Self.same($0, tag) } ?? false
+                    chip(tag, isOn: isOn) { chosenTag = isOn ? nil : tag }
+                }
+            }
+            .padding(.horizontal, 24)
+        }
+        .padding(.bottom, 10)
+    }
+
+    private func chip(_ title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            withAnimation(.snappy(duration: 0.25)) { action() }
+        } label: {
+            Text(title)
+                .font(.subheadline.weight(isOn ? .semibold : .regular))
+                .foregroundStyle(isOn ? Color.white : Color.primary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(isOn ? AnyShapeStyle(accent) : AnyShapeStyle(Color(.tertiarySystemFill)), in: Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     private func cell(_ page: JournalPage) -> some View {

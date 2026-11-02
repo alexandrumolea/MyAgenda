@@ -86,6 +86,8 @@ struct NotebookPagesView: View {
             .combined(with: .offset(x: 48))
     )
     @State private var editingTextBoxID: UUID?
+    /// iPhone: the box just started by a tap, scrolled into view.
+    @State private var revealTextBoxID: UUID?
     @State private var showTagsSidebar = false
     @State private var showOverview = false
     @State private var phoneZoom: CGFloat = 1
@@ -664,32 +666,58 @@ struct NotebookPagesView: View {
                 // pinch to zoom in/out (view-only, so scaling is fine).
                 let logicalW = page.canvasWidth > 1 ? CGFloat(page.canvasWidth) : phoneLogicalWidth
                 let fitScale = viewport.width / logicalW
-                // At least a full screen of paper, so every tap lands on the page.
-                let logicalH = max(CGFloat(page.canvasHeight), CGFloat(page.contentHeight),
-                                   logicalW * 1.3, viewport.height / fitScale)
                 let zoom = min(max(phoneZoom * phonePinch, 0.5), 4)
                 let scale = fitScale * zoom
+                // A box just started by a tap, while it is being written.
+                let revealBox = textBoxes(of: page)
+                    .first { $0.id == revealTextBoxID && $0.id == editingTextBoxID }
+                // At least a full screen of paper, so every tap lands on the page;
+                // and a screen below a new box, so it can scroll above the keyboard.
+                let logicalH = max(CGFloat(page.canvasHeight), CGFloat(page.contentHeight),
+                                   logicalW * 1.3, viewport.height / fitScale,
+                                   revealBox.map { CGFloat($0.y) * logicalW + viewport.height / scale } ?? 0)
                 let pageSize = CGSize(width: logicalW, height: logicalH)
 
-                ScrollView([.vertical, .horizontal], showsIndicators: true) {
-                    // New text reads at ~17pt on screen despite the scaled-down page.
-                    pageLayers(for: page, pageSize: pageSize,
-                               textSize: min(max(17 / fitScale, 18), 48), displayScale: scale)
-                        .frame(width: logicalW, height: logicalH, alignment: .topLeading)
-                        .scaleEffect(scale, anchor: .topLeading)
-                        .frame(width: logicalW * scale, height: logicalH * scale, alignment: .topLeading)
-                        .padding(.top, pageTopInset)
-                }
-                // Zoomed out, content smaller than the screen stays at the top
-                // instead of being centred (which left a band above the page).
-                .defaultScrollAnchor(.topLeading, for: .alignment)
-                .simultaneousGesture(
-                    MagnifyGesture()
-                        .updating($phonePinch) { value, state, _ in state = value.magnification }
-                        .onEnded { value in
-                            phoneZoom = min(max(phoneZoom * value.magnification, 0.5), 4)
+                ScrollViewReader { reader in
+                    ScrollView([.vertical, .horizontal], showsIndicators: true) {
+                        ZStack(alignment: .topLeading) {
+                            // New text reads at ~17pt on screen despite the scaled-down page.
+                            pageLayers(for: page, pageSize: pageSize,
+                                       textSize: min(max(17 / fitScale, 18), 48), displayScale: scale)
+                                .frame(width: logicalW, height: logicalH, alignment: .topLeading)
+                                .scaleEffect(scale, anchor: .topLeading)
+                                .frame(width: logicalW * scale, height: logicalH * scale, alignment: .topLeading)
+
+                            // A new box may start below the screen or under the
+                            // keyboard: scroll it up to the top third, at its left.
+                            if let box = revealBox {
+                                Color.clear
+                                    .frame(width: 1, height: 1)
+                                    .padding(.leading, CGFloat(box.x) * logicalW * scale)
+                                    .padding(.top, CGFloat(box.y) * logicalW * scale)
+                                    .id(box.id)
+                                    // After the keyboard is up, which scrolls the page itself.
+                                    .task {
+                                        try? await Task.sleep(for: .milliseconds(350))
+                                        withAnimation(.snappy(duration: 0.3)) {
+                                            reader.scrollTo(box.id, anchor: UnitPoint(x: 0, y: 0.3))
+                                        }
+                                    }
+                            }
                         }
-                )
+                        .padding(.top, pageTopInset)
+                    }
+                    // Zoomed out, content smaller than the screen stays at the top
+                    // instead of being centred (which left a band above the page).
+                    .defaultScrollAnchor(.topLeading, for: .alignment)
+                    .simultaneousGesture(
+                        MagnifyGesture()
+                            .updating($phonePinch) { value, state, _ in state = value.magnification }
+                            .onEnded { value in
+                                phoneZoom = min(max(phoneZoom * value.magnification, 0.5), 4)
+                            }
+                    )
+                }
             } else {
                 let pageWidth = viewport.width
                 let pageHeight = max(viewport.height * 1.35, CGFloat(page.contentHeight))
@@ -748,21 +776,24 @@ struct NotebookPagesView: View {
             )
 
             // iPhone (no Pencil): a finger tap on the empty page starts a text
-            // box right there. Photos sit above this layer, so a tap on one
-            // selects it instead. While something is being edited, the dismiss
+            // box at the left margin of the first free line, wherever the tap
+            // lands. Text and photos sit above this layer, so a tap on one goes
+            // to it instead. While something is being edited, the dismiss
             // layer below sits on top and the first tap just ends that edit.
             if isPhone {
                 Color.clear
                     .contentShape(Rectangle())
                     .gesture(
-                        SpatialTapGesture().onEnded { value in
+                        SpatialTapGesture().onEnded { _ in
                             guard selectedImageID == nil else {
                                 if !croppingImage {
                                     withAnimation(.snappy(duration: 0.2)) { selectedImageID = nil }
                                 }
                                 return
                             }
-                            addTextBox(at: value.location, on: page, pageSize: pageSize)
+                            let spot = freeSpot(on: page, pageSize: pageSize, textSize: textSize)
+                            addTextBox(at: spot, on: page, pageSize: pageSize)
+                            revealTextBoxID = editingTextBoxID
                         }
                     )
             }
@@ -830,7 +861,10 @@ struct NotebookPagesView: View {
                 )
             }
 
-            ForEach(textBoxes(of: page)) { box in
+            // A box never written in (left by a closed app, or still being
+            // started on the other device) is invisible: it is left out, so it
+            // does not swallow taps meant for the empty page.
+            ForEach(textBoxes(of: page).filter { !$0.rtfData.isEmpty || $0.id == editingTextBoxID }) { box in
                 TextBoxContainer(
                     box: box,
                     pageSize: pageSize,
@@ -1076,10 +1110,11 @@ struct NotebookPagesView: View {
     }
 
     /// First free spot on the page: below everything already on it.
-    private func freeSpot(on page: JournalPage, pageSize: CGSize) -> CGPoint {
+    /// `textSize` is the size checklists are shown at on this device.
+    private func freeSpot(on page: JournalPage, pageSize: CGSize, textSize: CGFloat = 18) -> CGPoint {
         let width = pageSize.width
         var bottom = width * 0.03
-        for box in page.textBoxes ?? [] {
+        for box in textBoxes(of: page) where !box.rtfData.isEmpty {
             let textWidth = max(CGFloat(box.widthFraction) * width - 12, 40)
             let height = TextBoxView.attributedString(from: box.rtfData)?
                 .boundingRect(with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
@@ -1087,11 +1122,13 @@ struct NotebookPagesView: View {
                 .height ?? 24
             bottom = max(bottom, CGFloat(box.y) * width + height + 12)
         }
-        for box in page.imageBoxes ?? [] {
+        for box in imageBoxes(of: page) {
             bottom = max(bottom, CGFloat(box.y + box.widthFraction * box.aspectRatio) * width)
         }
-        for box in page.checklistBoxes ?? [] {
-            bottom = max(bottom, CGFloat(box.y) * width + CGFloat(box.items.count) * 28 + 24)
+        // A row is one line of the checklist's font plus the gap between rows.
+        let row = ceil(UIFont.systemFont(ofSize: max(19, textSize)).lineHeight) + 6
+        for box in checklistBoxes(of: page) {
+            bottom = max(bottom, CGFloat(box.y) * width + CGFloat(box.items.count) * row + 24)
         }
         if let ink = proxy.canvas?.drawing.bounds, !ink.isNull {
             bottom = max(bottom, ink.maxY)
