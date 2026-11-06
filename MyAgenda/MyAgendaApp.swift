@@ -28,6 +28,10 @@ struct MyAgendaApp: App {
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
         }
+        TestInkCleanup.runOnce(in: container.mainContext)
+        // Listening before the first keyboard: a text view announces the
+        // keyboard before it says it started editing.
+        _ = PhoneKeyboardScroll.shared
     }
 
     var body: some Scene {

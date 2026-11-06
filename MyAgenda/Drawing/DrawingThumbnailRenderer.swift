@@ -19,7 +19,7 @@ enum DrawingThumbnailRenderer {
     private nonisolated(unsafe) static let cache = NSCache<NSString, UIImage>()
 
     /// Bump when the drawing code changes, so old thumbnails are redone.
-    private static let renderVersion = 5
+    private static let renderVersion = 6
 
     /// Hash of each page's drawing, so megabytes of ink are only re-hashed
     /// after the page changes.
@@ -224,13 +224,6 @@ enum DrawingThumbnailRenderer {
                     ui.draw(in: CGRect(x: CGFloat(box.x) * pageW, y: by, width: bw, height: bh))
                 }
 
-                if let drawing, !drawing.bounds.isNull,
-                   drawing.bounds.width > 0, drawing.bounds.height > 0 {
-                    let bounds = drawing.bounds
-                    let strokeImage = drawing.image(from: bounds, scale: 1)
-                    strokeImage.draw(in: bounds)
-                }
-
                 for box in snapshot.texts {
                     guard let stored = TextBoxView.attributedString(from: box.rtfData),
                           stored.length > 0 else { continue }
@@ -253,6 +246,14 @@ enum DrawingThumbnailRenderer {
 
                 for box in snapshot.checklists {
                     draw(box, paper: paper, pageWidth: pageW, visibleHeight: visibleHeight, in: ctx.cgContext)
+                }
+
+                // Ink last, over text and checklists, as on the page.
+                if let drawing, !drawing.bounds.isNull,
+                   drawing.bounds.width > 0, drawing.bounds.height > 0 {
+                    let bounds = drawing.bounds
+                    let strokeImage = drawing.image(from: bounds, scale: 1)
+                    strokeImage.draw(in: bounds)
                 }
 
                 ctx.cgContext.restoreGState()

@@ -12,6 +12,7 @@
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>com.apple.coredata.cloudkit.activity</string>
+		<string>com.apple.coredata.cloudkit.activity.*</string>
 	</array>
 </dict>
 </plist>

@@ -3,13 +3,107 @@
 //  MyAgenda
 //
 //  SwiftUI wrapper around PKCanvasView. Loads a page's drawing, applies the
-//  current tool, persists changes (debounced), and reports finger taps so the
-//  page can place a text box (Pencil draws, finger = text on iPad).
+//  current tool and persists changes (debounced). On iPad the canvas sits
+//  above the page's text, checklists and photos, so the Pencil writes over
+//  them; the finger goes through to whatever is underneath.
 //
 
 import SwiftUI
 import PencilKit
 import SwiftData
+
+/// The canvas covers the whole page, boxes included, so it lets touches fall
+/// through: a view can't tell the Pencil from a finger when it is hit (the
+/// touch isn't known yet). PencilKit's drawing recognizer sits on the page's
+/// scroll view instead, which sees the Pencil whatever it lands on, and draws
+/// with the same tools as ever. Hover stays, for the Pencil's tool preview.
+final class PencilCanvasView: PKCanvasView {
+    /// Pen, highlighter, eraser: the Pencil draws over the boxes too.
+    var reachesOverBoxes = false {
+        didSet { if reachesOverBoxes != oldValue { placeDrawingRecognizer() } }
+    }
+
+    /// With the lasso the canvas works as PencilKit made it and takes every
+    /// touch, so a selection can be dragged and its menu opened.
+    var takesTouches = false
+
+    private let pencilAnywhere = PencilAnywhereDelegate()
+    private weak var pencilKitHome: UIView?
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard takesTouches || event?.type == .hover else { return nil }
+        return super.hitTest(point, with: event)
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        placeDrawingRecognizer()
+    }
+
+    // Leaving the page: PencilKit gets its recognizer back, so the scroll view
+    // never keeps one whose delegate is gone.
+    override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        guard newWindow == nil else { return }
+        if drawingGestureRecognizer.delegate === pencilAnywhere {
+            drawingGestureRecognizer.delegate = pencilAnywhere.pencilKit
+        }
+        if let home = pencilKitHome, drawingGestureRecognizer.view !== home {
+            home.addGestureRecognizer(drawingGestureRecognizer)
+        }
+    }
+
+    private func placeDrawingRecognizer() {
+        guard window != nil, let page = pageScrollView else { return }
+        let recognizer = drawingGestureRecognizer
+        if pencilKitHome == nil { pencilKitHome = recognizer.view }
+        if reachesOverBoxes {
+            if recognizer.delegate !== pencilAnywhere {
+                pencilAnywhere.pencilKit = recognizer.delegate
+                pencilAnywhere.canvas = self
+                recognizer.delegate = pencilAnywhere
+            }
+        } else if recognizer.delegate === pencilAnywhere {
+            recognizer.delegate = pencilAnywhere.pencilKit
+        }
+        if let home = reachesOverBoxes ? page : pencilKitHome, recognizer.view !== home {
+            home.addGestureRecognizer(recognizer)
+        }
+    }
+
+    /// The scroll view holding the page: the canvas and every box.
+    private var pageScrollView: UIScrollView? {
+        var next = superview
+        while let candidate = next {
+            if let scroll = candidate as? UIScrollView { return scroll }
+            next = candidate.superview
+        }
+        return nil
+    }
+}
+
+/// Stands in for PencilKit as the drawing recognizer's delegate. PencilKit
+/// only takes touches that land on the canvas itself, and the Pencil now
+/// often lands on a box above it; everything else is PencilKit's own call.
+private final class PencilAnywhereDelegate: NSObject, UIGestureRecognizerDelegate {
+    // UIKit asks `responds(to:)` and `forwardingTarget(for:)` from outside the
+    // main actor's view, but only ever on the main thread.
+    nonisolated(unsafe) weak var pencilKit: UIGestureRecognizerDelegate?
+    weak var canvas: UIView?
+
+    func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        if pencilKit?.gestureRecognizer?(recognizer, shouldReceive: touch) ?? true { return true }
+        // A touch on the canvas itself stays PencilKit's call.
+        guard let canvas, touch.view?.isDescendant(of: canvas) != true else { return false }
+        return touch.type == .pencil && canvas.bounds.contains(touch.location(in: canvas))
+    }
+
+    nonisolated override func responds(to selector: Selector!) -> Bool {
+        super.responds(to: selector) || (pencilKit?.responds(to: selector) ?? false)
+    }
+
+    nonisolated override func forwardingTarget(for selector: Selector!) -> Any? { pencilKit }
+}
 
 struct PageCanvasView: UIViewRepresentable {
     let page: JournalPage
@@ -20,24 +114,27 @@ struct PageCanvasView: UIViewRepresentable {
     /// Dark paper shows the ink inverted (PencilKit's dark mode); the strokes
     /// are still stored with their white-paper colors.
     var paper: PaperColor = .white
+    /// iPad: the Pencil draws over the page's boxes. Off on iPhone, where the
+    /// finger must always reach the page.
+    var isPencilDevice = false
     /// Apple Pencil Pro squeeze.
     var onSqueeze: () -> Void = {}
     /// Apple Pencil double-tap.
     var onDoubleTap: () -> Void = {}
-    /// Finger double-tap on the bare page (nil = off). Boxes and photos sit
-    /// above the canvas, so they keep their own taps; Pencil is excluded.
-    var onFingerDoubleTap: ((CGPoint) -> Void)?
+    /// Any tool starts on the canvas (pen, highlighter, eraser, lasso).
+    var onInkBegan: () -> Void = {}
 
     // Pencil-only everywhere: on iPhone (no Pencil) this makes the page
     // view-only for drawing; the finger scrolls instead.
     private var drawingPolicy: PKCanvasViewDrawingPolicy { .pencilOnly }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(page: page, proxy: proxy, onSqueeze: onSqueeze, onDoubleTap: onDoubleTap)
+        Coordinator(page: page, proxy: proxy, onSqueeze: onSqueeze, onDoubleTap: onDoubleTap,
+                    onInkBegan: onInkBegan)
     }
 
     func makeUIView(context: Context) -> PKCanvasView {
-        let canvas = PKCanvasView()
+        let canvas = PencilCanvasView()
         canvas.delegate = context.coordinator
         canvas.drawingPolicy = drawingPolicy
         canvas.backgroundColor = .clear
@@ -53,22 +150,16 @@ struct PageCanvasView: UIViewRepresentable {
         pencil.delegate = context.coordinator
         canvas.addInteraction(pencil)
 
-        let doubleTap = UITapGestureRecognizer(target: context.coordinator,
-                                               action: #selector(Coordinator.handleFingerDoubleTap(_:)))
-        doubleTap.numberOfTapsRequired = 2
-        doubleTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
-        doubleTap.cancelsTouchesInView = false
-        doubleTap.delegate = context.coordinator
-        canvas.addGestureRecognizer(doubleTap)
         // The paper decides the appearance, not the system: black ink stays
         // black on light paper even in dark mode, and turns white on dark paper.
         canvas.overrideUserInterfaceStyle = paper.interfaceStyle
 
         if let drawing = try? PKDrawing(data: page.drawingData) {
-            canvas.drawing = drawing
+            context.coordinator.show(drawing, on: canvas)
         }
         context.coordinator.lastAppliedDrawingData = page.drawingData
         canvas.tool = tool
+        applyInput(to: canvas)
 
         context.coordinator.canvas = canvas
         if isActive { proxy.canvas = canvas }
@@ -79,20 +170,26 @@ struct PageCanvasView: UIViewRepresentable {
         canvas.tool = tool
         canvas.drawingPolicy = drawingPolicy
         canvas.overrideUserInterfaceStyle = paper.interfaceStyle
+        applyInput(to: canvas)
         context.coordinator.onSqueeze = onSqueeze
         context.coordinator.onDoubleTap = onDoubleTap
-        context.coordinator.onFingerDoubleTap = onFingerDoubleTap
+        context.coordinator.onInkBegan = onInkBegan
         context.coordinator.applyRemoteDrawingIfNeeded(from: page.drawingData)
         if isActive { proxy.canvas = canvas }
     }
 
-    final class Coordinator: NSObject, PKCanvasViewDelegate, UIPencilInteractionDelegate,
-                             UIGestureRecognizerDelegate {
+    private func applyInput(to canvas: PKCanvasView) {
+        guard let canvas = canvas as? PencilCanvasView else { return }
+        canvas.takesTouches = isPencilDevice && toolKind == .lasso
+        canvas.reachesOverBoxes = isPencilDevice && toolKind != .lasso
+    }
+
+    final class Coordinator: NSObject, PKCanvasViewDelegate, UIPencilInteractionDelegate {
         let page: JournalPage
         let proxy: CanvasProxy
         var onSqueeze: () -> Void
         var onDoubleTap: () -> Void
-        var onFingerDoubleTap: ((CGPoint) -> Void)?
+        var onInkBegan: () -> Void
         weak var canvas: PKCanvasView?
         var lastAppliedDrawingData = Data()
         private var saveTask: Task<Void, Never>?
@@ -101,11 +198,13 @@ struct PageCanvasView: UIViewRepresentable {
         init(page: JournalPage,
              proxy: CanvasProxy,
              onSqueeze: @escaping () -> Void,
-             onDoubleTap: @escaping () -> Void) {
+             onDoubleTap: @escaping () -> Void,
+             onInkBegan: @escaping () -> Void) {
             self.page = page
             self.proxy = proxy
             self.onSqueeze = onSqueeze
             self.onDoubleTap = onDoubleTap
+            self.onInkBegan = onInkBegan
         }
 
         func applyRemoteDrawingIfNeeded(from data: Data) {
@@ -113,22 +212,18 @@ struct PageCanvasView: UIViewRepresentable {
                   saveTask == nil,
                   let canvas,
                   let drawing = try? PKDrawing(data: data) else { return }
-            isApplyingRemoteDrawing = true
-            canvas.drawing = drawing
-            isApplyingRemoteDrawing = false
+            show(drawing, on: canvas)
             lastAppliedDrawingData = data
         }
 
-        @objc func handleFingerDoubleTap(_ tap: UITapGestureRecognizer) {
-            guard tap.state == .ended, let view = tap.view else { return }
-            let point = tap.location(in: view)
-            onFingerDoubleTap?(point)
-        }
-
-        /// The page's scrolling and other taps carry on as usual.
-        func gestureRecognizer(_ recognizer: UIGestureRecognizer,
-                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-            true
+        /// Puts ink on the canvas that nobody drew here (the stored page, or a
+        /// change from the other device). PencilKit reports it as a change,
+        /// sometimes a moment later; saving that would send the same ink back
+        /// to iCloud, and the two devices kept bouncing a page between them.
+        func show(_ drawing: PKDrawing, on canvas: PKCanvasView) {
+            isApplyingRemoteDrawing = true
+            canvas.drawing = drawing
+            Task { @MainActor [weak self] in self?.isApplyingRemoteDrawing = false }
         }
 
         // MARK: UIPencilInteractionDelegate
@@ -145,6 +240,10 @@ struct PageCanvasView: UIViewRepresentable {
             Task { @MainActor in self.onDoubleTap() }
         }
 
+        func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
+            onInkBegan()
+        }
+
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
             guard !isApplyingRemoteDrawing else { return }
             let size = canvasView.bounds.size
@@ -153,6 +252,11 @@ struct PageCanvasView: UIViewRepresentable {
             proxy.flushPendingSave = { [weak self, weak canvasView, page] in
                 guard let canvasView, page.modelContext != nil else { return }
                 let data = canvasView.drawing.dataRepresentation()
+                // The same ink as stored: nothing to save or send.
+                guard data != self?.lastAppliedDrawingData else {
+                    self?.saveTask = nil
+                    return
+                }
                 page.drawingData = data
                 if size.width > 0, size.height > 0 {
                     page.canvasWidth = Double(size.width)

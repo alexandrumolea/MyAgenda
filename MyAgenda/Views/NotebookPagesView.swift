@@ -57,10 +57,6 @@ struct NotebookPagesView: View {
     @State private var hideDaysPill = UserDefaults.standard.bool(forKey: "topBarHidden")
     @State private var hideNotebookPill = UserDefaults.standard.bool(forKey: "topBarHidden")
     @State private var barFlow: Task<Void, Never>?
-    /// Staging flag for the toolbar: docked at the right edge before it drains
-    /// into the reopen handle (and right after it pours back out of it).
-    @State private var toolsDocked = false
-    @State private var toolsFlow: Task<Void, Never>?
     /// Pull-past-the-last-page progress (only the hint observes it).
     @State private var pagePull = PagePullState()
     /// Where the docked pen toolbar takes touches (see ToolbarDock).
@@ -88,9 +84,9 @@ struct NotebookPagesView: View {
     @State private var editingTextBoxID: UUID?
     /// A text or checklist is being moved: the page doesn't scroll meanwhile.
     @State private var boxLifted = false
-    /// iPhone: the box just started by a tap, scrolled into view.
-    @State private var revealTextBoxID: UUID?
     @State private var showTagsSidebar = false
+    /// iPhone: the page tapped in the tags sheet, applied once the sheet is gone.
+    @State private var phoneJumpTarget: UUID?
     @State private var showOverview = false
     @State private var phoneZoom: CGFloat = 1
     @GestureState private var phonePinch: CGFloat = 1
@@ -224,11 +220,20 @@ struct NotebookPagesView: View {
         .sheet(isPresented: Binding(
             get: { isPhone && showTagsSidebar },
             set: { if isPhone { showTagsSidebar = $0 } }
-        )) {
+        ),
+        // The jump must not share a transaction with showTagsSidebar: the
+        // .animation(value:) above would then animate the pager across several
+        // pages and it overshoots, writing a neighbour back into selection. Nor
+        // may it land mid-dismiss, so it waits for the sheet to be gone.
+        onDismiss: {
+            guard let id = phoneJumpTarget else { return }
+            phoneJumpTarget = nil
+            selection = id
+        }) {
             TagsSidebar(
                 page: selectedPage,
                 notebookPages: pages,
-                onJump: { selection = $0; showTagsSidebar = false },
+                onJump: { phoneJumpTarget = $0; showTagsSidebar = false },
                 onClose: { showTagsSidebar = false }
             )
         }
@@ -461,29 +466,6 @@ struct NotebookPagesView: View {
         }
     }
 
-    /// Hide: the capsule glides to the right edge, then drains into the handle.
-    /// Show: it pours out of the handle at the edge, then glides back to centre.
-    private func setToolbar(hidden: Bool) {
-        toolsFlow?.cancel()
-        toolsFlow = Task {
-            if hidden {
-                withAnimation(Self.liquid) { toolsDocked = true }
-                try? await Task.sleep(for: .milliseconds(180))
-                guard !Task.isCancelled else { return }
-                withAnimation(Self.liquid) { toolbarHidden = true }
-                try? await Task.sleep(for: .milliseconds(600))
-                guard !Task.isCancelled else { return }
-                toolsDocked = false   // off-screen bookkeeping, no animation
-            } else {
-                toolsDocked = true
-                withAnimation(Self.liquid) { toolbarHidden = false }
-                try? await Task.sleep(for: .milliseconds(180))
-                guard !Task.isCancelled else { return }
-                withAnimation(Self.liquid) { toolsDocked = false }
-            }
-        }
-    }
-
     private func barButton(_ system: String, active: Bool = false,
                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -560,13 +542,23 @@ struct NotebookPagesView: View {
             },
             action(toolbarHidden ? "Arată instrumentele" : "Ascunde instrumentele",
                    toolbarHidden ? "pencil.and.outline" : "pencil.slash") {
-                setToolbar(hidden: !toolbarHidden)
+                toolbarHidden.toggle()
             }
         ]
         if topBarHidden {
             view.append(action("Ceas mic", "clock", on: showsMiniClock) { showsMiniClock.toggle() })
         }
-        var sections: [UIMenuElement] = [UIMenu(options: .displayInline, children: view)]
+        var sections: [UIMenuElement] = []
+        // Off today's pages: one tap back to today, as in the day strip.
+        if selectedPage.map({ Calendar.current.isDateInToday($0.day) }) != true {
+            sections.append(UIMenu(options: .displayInline, children: [
+                action("Azi", "sun.max") {
+                    goToDay(Calendar.current.startOfDay(for: .now))
+                    calendarReveal.settle(open: false)
+                }
+            ]))
+        }
+        sections.append(UIMenu(options: .displayInline, children: view))
 
         // With the bar hidden, the essentials move in here so the page stays usable.
         if topBarHidden {
@@ -651,13 +643,14 @@ struct NotebookPagesView: View {
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             // Same color as the paper, so the area under the floating bar reads
-            // as the page continuing, not as a margin. Also under the keyboard:
-            // on iPhone the page stops above it, and the editing bar's clear
-            // strip showed the window (black in dark mode) instead of paper.
+            // as the page continuing, not as a margin. Also under the keyboard,
+            // where the editing bar's clear strip would show the window (black
+            // in dark mode) instead of paper.
             .background { selectedPaper.color.ignoresSafeArea() }
-            // iPad: don't push the page up when the keyboard appears — text
-            // stays put. iPhone: make room, so a box tapped low stays visible.
-            .ignoresSafeArea(.keyboard, edges: isPhone ? [] : .bottom)
+            // Don't push the page up when the keyboard appears: text stays
+            // put. On iPhone, PhoneKeyboardScroll moves a box the keyboard
+            // would cover, with the keyboard (shrinking the page made it jump).
+            .ignoresSafeArea(.keyboard, edges: .bottom)
             // Pulling past the last page: a glass "+" grows from the right edge.
             .overlay(alignment: .trailing) { PagePullHint(state: pagePull) }
             .simultaneousGesture(
@@ -689,15 +682,13 @@ struct NotebookPagesView: View {
                     pen: pen, proxy: proxy, regions: dockRegions, isPhone: isPhone,
                     // While editing, the bar above the keyboard is the only one.
                     showsToolbar: editingTextBoxID == nil && editingChecklistID == nil,
-                    toolbarHidden: toolbarHidden, toolsDocked: toolsDocked,
+                    toolbarHidden: $toolbarHidden,
                     leadingInset: panelInset,
                     onAddText: addTextBoxOnFreeSpot,
                     onAddChecklist: addChecklistOnFreeSpot,
                     onAddPhoto: { showPhotoPicker = true },
                     onAddPage: addPage,
-                    onTimer: onShowTimer,
-                    onHide: { setToolbar(hidden: true) },
-                    onShow: { setToolbar(hidden: false) }
+                    onTimer: onShowTimer
                 )
                 .tint(notebook.accentColor)
             }
@@ -716,72 +707,48 @@ struct NotebookPagesView: View {
                 let fitScale = viewport.width / logicalW
                 let zoom = min(max(phoneZoom * phonePinch, 0.5), 4)
                 let scale = fitScale * zoom
-                // A box just started by a tap, while it is being written.
-                let revealBox = textBoxes(of: page)
-                    .first { $0.id == revealTextBoxID && $0.id == editingTextBoxID }
                 // More than a screen of paper, as on iPad, so the page always
-                // scrolls and every tap lands on it; and a screen below a new box,
-                // so it can scroll above the keyboard.
+                // scrolls and every tap lands on it.
                 let logicalH = max(CGFloat(page.canvasHeight), CGFloat(page.contentHeight),
-                                   logicalW * 1.3, viewport.height * 1.35 / fitScale,
-                                   revealBox.map { CGFloat($0.y) * logicalW + viewport.height / scale } ?? 0)
+                                   logicalW * 1.3, viewport.height * 1.35 / fitScale)
                 let pageSize = CGSize(width: logicalW, height: logicalH)
 
-                ScrollViewReader { reader in
-                    ScrollView([.vertical, .horizontal], showsIndicators: true) {
-                        ZStack(alignment: .topLeading) {
-                            // New text reads at ~17pt on screen despite the scaled-down page.
-                            pageLayers(for: page, pageSize: pageSize,
-                                       textSize: min(max(17 / fitScale, 18), 48), displayScale: scale)
-                                .frame(width: logicalW, height: logicalH, alignment: .topLeading)
-                                .scaleEffect(scale, anchor: .topLeading)
-                                .frame(width: logicalW * scale, height: logicalH * scale, alignment: .topLeading)
-
-                            // A new box may start below the screen or under the
-                            // keyboard: scroll it up to the top third, at its left.
-                            if let box = revealBox {
-                                Color.clear
-                                    .frame(width: 1, height: 1)
-                                    .padding(.leading, CGFloat(box.x) * logicalW * scale)
-                                    .padding(.top, CGFloat(box.y) * logicalW * scale)
-                                    .id(box.id)
-                                    // After the keyboard is up, which scrolls the page itself.
-                                    .task {
-                                        try? await Task.sleep(for: .milliseconds(350))
-                                        withAnimation(.snappy(duration: 0.3)) {
-                                            reader.scrollTo(box.id, anchor: UnitPoint(x: 0, y: 0.3))
-                                        }
-                                    }
-                            }
-                        }
+                ScrollView([.vertical, .horizontal], showsIndicators: true) {
+                    // New text reads at ~17pt on screen despite the scaled-down page.
+                    pageLayers(for: page, pageSize: pageSize,
+                               textSize: min(max(17 / fitScale, 18), 48), displayScale: scale)
+                        .frame(width: logicalW, height: logicalH, alignment: .topLeading)
+                        .scaleEffect(scale, anchor: .topLeading)
+                        .frame(width: logicalW * scale, height: logicalH * scale, alignment: .topLeading)
                         .padding(.top, pageTopInset)
-                    }
-                    // Zoomed out, content smaller than the screen stays at the top
-                    // instead of being centred (which left a band above the page).
-                    .defaultScrollAnchor(.topLeading, for: .alignment)
-                    // Beyond the page (zoomed out, under the bar), the same paper.
-                    .background(paper(of: page).color)
-                    .scrollDisabled(boxLifted)
-                    // Near the bottom, the page grows, as on iPad: there is always
-                    // more paper below. Only once you've scrolled, so just opening
-                    // a page never changes it.
-                    .onScrollGeometryChange(for: Bool.self) { scrollGeo in
-                        scrollGeo.contentOffset.y + scrollGeo.contentInsets.top > 20
-                            && scrollGeo.contentOffset.y + scrollGeo.containerSize.height
-                                > scrollGeo.contentSize.height - 140
-                    } action: { _, atBottom in
-                        if atBottom {
-                            growPage(page, currentHeight: logicalH, viewport: viewport.height / scale)
-                        }
-                    }
-                    .simultaneousGesture(
-                        MagnifyGesture()
-                            .updating($phonePinch) { value, state, _ in state = value.magnification }
-                            .onEnded { value in
-                                phoneZoom = min(max(phoneZoom * value.magnification, 0.5), 4)
-                            }
-                    )
                 }
+                // Room under the keyboard, so the last lines can rise above it.
+                .contentMargins(.bottom, PhoneKeyboardScroll.shared.keyboardOverlap, for: .scrollContent)
+                // Zoomed out, content smaller than the screen stays at the top
+                // instead of being centred (which left a band above the page).
+                .defaultScrollAnchor(.topLeading, for: .alignment)
+                // Beyond the page (zoomed out, under the bar), the same paper.
+                .background(paper(of: page).color)
+                .scrollDisabled(boxLifted)
+                // Near the bottom, the page grows, as on iPad: there is always
+                // more paper below. Only once you've scrolled, so just opening
+                // a page never changes it.
+                .onScrollGeometryChange(for: Bool.self) { scrollGeo in
+                    scrollGeo.contentOffset.y + scrollGeo.contentInsets.top > 20
+                        && scrollGeo.contentOffset.y + scrollGeo.containerSize.height
+                            > scrollGeo.contentSize.height - 140
+                } action: { _, atBottom in
+                    if atBottom {
+                        growPage(page, currentHeight: logicalH, viewport: viewport.height / scale)
+                    }
+                }
+                .simultaneousGesture(
+                    MagnifyGesture()
+                        .updating($phonePinch) { value, state, _ in state = value.magnification }
+                        .onEnded { value in
+                            phoneZoom = min(max(phoneZoom * value.magnification, 0.5), 4)
+                        }
+                )
             } else {
                 let pageWidth = viewport.width
                 let pageHeight = max(viewport.height * 1.35, CGFloat(page.contentHeight))
@@ -818,21 +785,6 @@ struct NotebookPagesView: View {
         ZStack(alignment: .topLeading) {
             PaperBackground(style: notebook.pageStyle, paper: paper)
 
-            PageCanvasView(
-                page: page,
-                tool: pen.pkTool,
-                toolKind: pen.tool,
-                proxy: proxy,
-                isActive: page.id == selection,
-                paper: paper,
-                onSqueeze: { pen.toggleEraser() },
-                onDoubleTap: { pen.toggleLasso() },
-                // iPad: double tap the bare page to start writing right there.
-                onFingerDoubleTap: isPhone ? nil : { point in
-                    addTextBox(at: point, on: page, pageSize: pageSize)
-                }
-            )
-
             // Custom variable-width pen engine (GoodNotes-like). Active only for
             // the pen tool; other tools use PencilKit directly. Off on iPhone.
             InkOverlay(
@@ -845,27 +797,27 @@ struct NotebookPagesView: View {
                 proxy: proxy
             )
 
-            // iPhone (no Pencil): a finger tap on the empty page starts a text
-            // box at the left margin of the first free line, wherever the tap
-            // lands. Text and photos sit above this layer, so a tap on one goes
+            // iPhone (no Pencil): double tap the empty page to start writing
+            // right there, as on iPad; a single tap lets go of a selected
+            // photo. Text and photos sit above this layer, so a tap on one goes
             // to it instead. While something is being edited, the dismiss
             // layer below sits on top and the first tap just ends that edit.
             if isPhone {
                 Color.clear
                     .contentShape(Rectangle())
-                    .gesture(
-                        SpatialTapGesture().onEnded { _ in
-                            guard selectedImageID == nil else {
-                                if !croppingImage {
-                                    withAnimation(.snappy(duration: 0.2)) { selectedImageID = nil }
-                                }
-                                return
-                            }
-                            let spot = freeSpot(on: page, pageSize: pageSize, textSize: textSize)
-                            addTextBox(at: spot, on: page, pageSize: pageSize)
-                            revealTextBoxID = editingTextBoxID
-                        }
-                    )
+                    .onTapGesture(count: 2) { point in
+                        guard selectedImageID == nil else { deselectPhoneImage(); return }
+                        addTextBox(at: point, on: page, pageSize: pageSize)
+                    }
+                    .onTapGesture { deselectPhoneImage() }
+            } else {
+                // iPad: double tap the bare page to start writing right there.
+                // Boxes and photos sit above this layer and keep their own taps.
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { point in
+                        addTextBox(at: point, on: page, pageSize: pageSize)
+                    }
             }
 
             // Tap an empty spot to dismiss a selected/editing element.
@@ -963,6 +915,23 @@ struct NotebookPagesView: View {
                     onLift: liftBox
                 )
             }
+
+            // Ink on top of everything, the selected photo included: on iPad the
+            // Pencil writes over text, checklists and photos. The canvas lets
+            // every touch through, so the finger still reaches the boxes.
+            PageCanvasView(
+                page: page,
+                tool: pen.pkTool,
+                toolKind: pen.tool,
+                proxy: proxy,
+                isActive: page.id == selection,
+                paper: paper,
+                isPencilDevice: !isPhone,
+                onSqueeze: { pen.toggleEraser() },
+                onDoubleTap: { pen.toggleLasso() },
+                onInkBegan: endEditingForInk
+            )
+            .zIndex(10)
         }
         // Overlays (checklist, text) follow the paper, not the system: on white
         // paper in dark mode SwiftUI's .primary would be white and vanish.
@@ -1251,6 +1220,13 @@ struct NotebookPagesView: View {
 
     /// Insert a text box at a page point. It runs to the right edge of the
     /// page, so text flows across the whole line, like writing on paper.
+    /// iPhone: a tap on the bare page lets go of the selected photo (not
+    /// while it is being cropped).
+    private func deselectPhoneImage() {
+        guard selectedImageID != nil, !croppingImage else { return }
+        withAnimation(.snappy(duration: 0.2)) { selectedImageID = nil }
+    }
+
     private func addTextBox(at point: CGPoint, on page: JournalPage, pageSize: CGSize) {
         guard pageSize.width > 0, pageSize.height > 0 else { return }
         let nx = min(max(Double(point.x / pageSize.width), 0), 0.9)
@@ -1310,6 +1286,16 @@ struct NotebookPagesView: View {
         if Double(newHeight) > page.contentHeight {
             page.contentHeight = Double(newHeight)
             page.updatedAt = .now
+        }
+    }
+
+    /// A Pencil stroke while a box is being edited draws and ends the edit,
+    /// like a tap on the empty page. `handleEndEdit` still drops an empty box.
+    private func endEditingForInk() {
+        guard editingTextBoxID != nil || editingChecklistID != nil else { return }
+        withAnimation(.snappy(duration: 0.2)) {
+            editingChecklistID = nil
+            editingTextBoxID = nil
         }
     }
 

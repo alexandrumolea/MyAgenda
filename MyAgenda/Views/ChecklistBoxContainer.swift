@@ -322,6 +322,7 @@ private struct ChecklistItemField: UIViewRepresentable {
         tf.overrideUserInterfaceStyle = interfaceStyle
         tf.inputAccessoryView = accessory
         tf.inputAssistantItem.trailingBarButtonGroups = []
+        tf.addInteraction(UIScribbleInteraction(delegate: NoScribble.shared))
         tf.setContentHuggingPriority(.defaultLow, for: .horizontal)
         tf.onBackspaceWhenEmpty = { context.coordinator.parent.onBackspaceWhenEmpty() }
         tf.addTarget(context.coordinator, action: #selector(Coordinator.editingChanged(_:)), for: .editingChanged)
@@ -366,6 +367,7 @@ private struct ChecklistItemField: UIViewRepresentable {
         }
 
         func textFieldDidBeginEditing(_ textField: UITextField) {
+            PhoneKeyboardScroll.shared.begin(textField)
             parent.onBeginEditing()
         }
     }

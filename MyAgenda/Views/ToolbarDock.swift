@@ -101,8 +101,10 @@ final class ToolbarDockView: UIView {
 }
 
 /// Pen toolbar and its reopen handle. They share a container so their glass
-/// blends: the capsule glides to the edge (docked), then drains into the
-/// handle; showing pours it back out and glides it to the centre.
+/// blends: the capsule glides to the edge and drains into the handle in one
+/// motion; showing pours it back out and glides it to the centre. The flow is
+/// driven by local state, because `withAnimation` in the parent never reaches
+/// the hosting controller.
 struct BottomToolbarLayer: View {
     let pen: PenSettings
     let proxy: CanvasProxy
@@ -110,8 +112,8 @@ struct BottomToolbarLayer: View {
     let isPhone: Bool
     /// False on iPhone while a text box is being edited.
     let showsToolbar: Bool
-    let toolbarHidden: Bool
-    let toolsDocked: Bool
+    /// The persisted truth; the states below stage the animation around it.
+    @Binding var toolbarHidden: Bool
     /// iPad: width of the open tags panel, kept clear on the left.
     var leadingInset: CGFloat = 0
     var onAddText: () -> Void
@@ -119,10 +121,17 @@ struct BottomToolbarLayer: View {
     var onAddPhoto: () -> Void
     var onAddPage: () -> Void
     var onTimer: () -> Void
-    var onHide: () -> Void
-    var onShow: () -> Void
 
-    @GestureState private var dragX: CGFloat = 0
+    /// The capsule is drawn as a droplet inside the handle (and on its way
+    /// there or back).
+    @State private var docked = UserDefaults.standard.bool(forKey: "penToolbarHidden")
+    /// The capsule is out of the hierarchy. Implies `docked`.
+    @State private var gone = UserDefaults.standard.bool(forKey: "penToolbarHidden")
+    @State private var dragX: CGFloat = 0
+    /// How far it can still slide to the right edge, measured at rest.
+    @State private var slack: CGFloat = .infinity
+    /// Tags each hide, so an older completion can't finish a newer one early.
+    @State private var hideID = 0
 
     /// Gap between the bar and the keyboard / home indicator.
     private static let gap: CGFloat = 8
@@ -130,7 +139,7 @@ struct BottomToolbarLayer: View {
     var body: some View {
         GlassEffectContainer(spacing: 16) {
             ZStack(alignment: .bottom) {
-                if !toolbarHidden && showsToolbar {
+                if !gone && showsToolbar {
                     PenToolbar(pen: pen, proxy: proxy, showsDrawingTools: !isPhone,
                                compact: leadingInset > 0,
                                onAddText: onAddText, onAddChecklist: onAddChecklist,
@@ -141,20 +150,49 @@ struct BottomToolbarLayer: View {
                         .contentShape(.capsule)
                         .dockHitRegion("toolbar", in: regions)
                         .padding(.bottom, Self.gap)
-                        .offset(x: dragX)
+                        // Room left to the edge, so releasing a clamped drag never
+                        // moves the capsule back to the left.
+                        .onGeometryChange(for: CGFloat.self) { proxy in
+                            guard let dock = proxy.bounds(of: .named(ToolbarDockSpace.name)) else { return .infinity }
+                            return dock.maxX - proxy.frame(in: .named(ToolbarDockSpace.name)).maxX
+                        } action: {
+                            if dragX == 0 && !docked { slack = $0 }
+                        }
+                        // Offset, alignment and scale change in one transaction, so
+                        // the net position is a single curve from wherever the
+                        // capsule was released into the handle.
+                        .scaleEffect(docked ? 0.08 : 1, anchor: .trailing)
+                        .offset(x: docked ? 48 : dragX)
                         .gesture(
                             DragGesture()
-                                .updating($dragX) { value, state, _ in
-                                    state = max(0, value.translation.width)  // rightward only
-                                }
+                                .onChanged { dragX = min(max(0, $0.translation.width), slack) }  // rightward only
                                 .onEnded { value in
-                                    if value.translation.width > 90 { onHide() }
+                                    if value.translation.width > 90 {
+                                        hide()
+                                    } else {
+                                        withAnimation(NotebookPagesView.liquid) { dragX = 0 }
+                                    }
                                 }
                         )
-                        .frame(maxWidth: .infinity, alignment: toolsDocked ? .trailing : .center)
+                        .frame(maxWidth: .infinity, alignment: docked ? .trailing : .center)
+                        // Only for `showsToolbar` (iPhone): hiding is animated by hand.
                         .transition(NotebookPagesView.drain)
+                        // Inserted inside the handle (see onChange): pour it out —
+                        // unless it was hidden again meanwhile (iPhone, while the
+                        // toolbar was off for editing), then it just leaves.
+                        .onAppear {
+                            dragX = 0
+                            guard docked else { return }
+                            if toolbarHidden {
+                                gone = true
+                            } else {
+                                withAnimation(NotebookPagesView.liquid) { docked = false }
+                            }
+                        }
+                        // A drag cut short (call, backgrounding) never gets onEnded.
+                        .onDisappear { dragX = 0 }
                 }
-                if toolbarHidden {
+                if docked {
                     reopenHandle
                         .dockHitRegion("handle", in: regions)
                         .padding(.bottom, Self.gap + 8)
@@ -172,14 +210,41 @@ struct BottomToolbarLayer: View {
         // the pills while they drain or pour.
         .frame(height: 96, alignment: .bottom)
         .coordinateSpace(.named(ToolbarDockSpace.name))
-        .animation(NotebookPagesView.liquid, value: toolbarHidden)
-        .animation(NotebookPagesView.liquid, value: toolsDocked)
         .animation(NotebookPagesView.liquid, value: showsToolbar)
+        .onChange(of: toolbarHidden) { _, hidden in
+            if hidden {
+                if !gone && !docked { hide() }
+            } else if gone {
+                // Appears inside the handle, without animation; onAppear pours it out.
+                var t = Transaction()
+                t.disablesAnimations = true
+                withTransaction(t) { gone = false }
+            } else {
+                withAnimation(NotebookPagesView.liquid) { docked = false }
+            }
+        }
+    }
+
+    /// Glides the capsule to the edge and drains it into the handle; it leaves
+    /// the hierarchy only once it is already invisible there.
+    private func hide() {
+        // Persisted up front, so a tap on the handle mid-flow reads as "show".
+        toolbarHidden = true
+        hideID += 1
+        let id = hideID
+        withAnimation(NotebookPagesView.liquid) {
+            dragX = 0
+            docked = true
+        } completion: {
+            // Showing interrupted the hide, or a newer hide is still draining.
+            guard docked, id == hideID else { return }
+            gone = true
+        }
     }
 
     /// Small tab on the right edge that pulls the toolbar back (Apple Notes style).
     private var reopenHandle: some View {
-        Button(action: onShow) {
+        Button { toolbarHidden = false } label: {
             Image(systemName: "chevron.left")
                 .font(.system(size: 16, weight: .semibold))
                 .frame(width: 30, height: 52)

@@ -24,6 +24,8 @@ struct HoldToMoveGesture: UIGestureRecognizerRepresentable {
     func makeUIGestureRecognizer(context: Context) -> UILongPressGestureRecognizer {
         let recognizer = UILongPressGestureRecognizer()
         recognizer.minimumPressDuration = 0.35
+        // The finger moves boxes; the Pencil always writes, even held still.
+        recognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         recognizer.delegate = context.coordinator
         return recognizer
     }

@@ -56,6 +56,7 @@ struct TextBoxView: UIViewRepresentable {
         tv.inputAccessoryView = context.coordinator.makeBar(accent: accent)
         // The bar has these tools already; the keyboard needn't repeat them.
         tv.inputAssistantItem.trailingBarButtonGroups = []
+        tv.addInteraction(UIScribbleInteraction(delegate: NoScribble.shared))
         NotificationCenter.default.addObserver(
             context.coordinator, selector: #selector(Coordinator.keyboardWillHide),
             name: UIResponder.keyboardWillHideNotification, object: nil)
@@ -452,7 +453,14 @@ struct TextBoxView: UIViewRepresentable {
 
         // MARK: UITextViewDelegate
 
-        func textViewDidChange(_ textView: UITextView) { scheduleSave() }
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            PhoneKeyboardScroll.shared.begin(textView)
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            scheduleSave()
+            PhoneKeyboardScroll.shared.followCaret(of: textView)
+        }
 
         /// A double tap on the page creates the box, and the canvas under it
         /// reaches for the focus a moment later. A box that was only just
@@ -508,6 +516,17 @@ struct TextBoxView: UIViewRepresentable {
                 SyncLog.saved("text", bytes: data.count)
             }
         }
+    }
+}
+
+/// Scribble off: on the page the Pencil always means ink, never handwriting
+/// turned into text. Shared, because an interaction holds its delegate weakly.
+final class NoScribble: NSObject, UIScribbleInteractionDelegate {
+    static let shared = NoScribble()
+
+    func scribbleInteraction(_ interaction: UIScribbleInteraction,
+                             shouldBeginAt location: CGPoint) -> Bool {
+        false
     }
 }
 
