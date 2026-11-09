@@ -17,6 +17,10 @@ nonisolated enum InkRenderer {
     /// Consecutive points closer in width than this share one stroked path:
     /// with round joins the union is the same geometry, far fewer paths.
     private static let widthTolerance: CGFloat = 0.05
+    /// The marker's outline is built from one polyline point per B-spline
+    /// span: filling the outline of every point is too slow at large widths,
+    /// and a span is far shorter than the marker is wide.
+    private static let markerStride = Int(1 / InkGeometry.step)
 
     /// Strokes `polyline` in `color`, only the segments that can touch `rect`
     /// (the dirty rect, document coordinates) when given. Round caps and
@@ -35,14 +39,20 @@ nonisolated enum InkRenderer {
 
         if inkType == .marker {
             // One path, filled once: the translucent ink must not darken
-            // where its own segments overlap. Plain alpha, no blend mode: the
-            // live view is composited normally over the committed bitmap, and
-            // only normal compositing gives the same pixels whether the marker
-            // is drawn into the bitmap or over it, so nothing changes at lift.
+            // where its own segments overlap. Its outline is filled rather
+            // than the path stroked: CoreGraphics strokes a long path in
+            // batches and composites each on its own, so the join between two
+            // batches was painted twice, a darker disk that came and went
+            // with the redraws. Plain alpha, no blend mode: the live view is
+            // composited normally over the committed bitmap, and only normal
+            // compositing gives the same pixels whether the marker is drawn
+            // into the bitmap or over it, so nothing changes at lift.
             ctx.setAlpha(markerAlpha)
+            ctx.setFillColor(color.cgColor)
             ctx.setLineWidth(polyline[0].width)
-            if addLines(polyline, from: 0, to: polyline.count, touching: rect, in: ctx) {
-                ctx.strokePath()
+            if addLines(polyline, from: 0, to: polyline.count, stride: markerStride, touching: rect, in: ctx) {
+                ctx.replacePathWithStrokedPath()
+                ctx.fillPath()
             }
             return
         }
@@ -67,7 +77,11 @@ nonisolated enum InkRenderer {
     /// Adds the segments of `polyline[start..<end]` whose padded box meets
     /// `rect` (all of them when nil); a skipped segment ends the subpath and
     /// the next kept one starts a new one. False when nothing was added.
-    private static func addLines(_ polyline: [InkPoint], from start: Int, to end: Int,
+    /// With a `stride`, only every `stride`-th point counted from `start` and
+    /// the last one are joined: a growing stroke keeps the same points at
+    /// its start as samples arrive, so the live line and the committed one
+    /// match.
+    private static func addLines(_ polyline: [InkPoint], from start: Int, to end: Int, stride: Int = 1,
                                  touching rect: CGRect?, in ctx: CGContext) -> Bool {
         if end - start == 1 {
             let point = polyline[start]
@@ -78,8 +92,11 @@ nonisolated enum InkRenderer {
         }
         var added = false
         var subpathOpen = false
-        for index in (start + 1)..<end {
-            let from = polyline[index - 1], to = polyline[index]
+        var previous = start
+        while previous < end - 1 {
+            let index = min(previous + stride, end - 1)
+            let from = polyline[previous], to = polyline[index]
+            previous = index
             if let rect, !box(around: from).union(box(around: to)).intersects(rect) {
                 subpathOpen = false
                 continue
@@ -131,14 +148,16 @@ nonisolated enum InkRenderer {
     /// Draws, in document order, the strokes whose bounds (our own, cached by
     /// the document) touch `rect`, and of each only the segments that do; a
     /// stroke wholly inside `rect` skips the per-segment test. Returns how
-    /// many strokes were drawn. The entries at `skipping` are left out (a
-    /// lasso selection, drawn above the page while it is dragged).
+    /// many strokes were drawn. Only the markers, or only the rest: the
+    /// highlights have their own layer, under all the writing. The entries
+    /// at `skipping` are left out (a lasso selection, drawn above the page
+    /// while it is dragged).
     @discardableResult
-    static func draw(_ strokes: [InkEntry], paper: PaperColor, rect: CGRect, skipping: IndexSet = [],
-                     in ctx: CGContext) -> Int {
+    static func draw(_ strokes: [InkEntry], markers: Bool, paper: PaperColor, rect: CGRect,
+                     skipping: IndexSet = [], in ctx: CGContext) -> Int {
         var drawn = 0
         for (index, entry) in strokes.enumerated()
-        where entry.bounds.intersects(rect) && !skipping.contains(index) {
+        where entry.bounds.intersects(rect) && entry.isMarker == markers && !skipping.contains(index) {
             draw(entry, paper: paper, rect: rect.contains(entry.bounds) ? nil : rect, in: ctx)
             drawn += 1
         }

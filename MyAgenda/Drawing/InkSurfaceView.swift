@@ -6,7 +6,9 @@
 //  PencilKit renders of the legacy strokes, bitmap tiles of the committed
 //  strokes our renderer draws (only the tiles a stroke lands on are redrawn,
 //  and only where ink is are there tiles), and the live stroke under the
-//  Pencil, in a view the size of that stroke. Live and committed go through the
+//  Pencil, in a view the size of that stroke. The highlights have tiles of
+//  their own, under the underlay, so they sit under all the writing whatever
+//  order it was written in. Live and committed go through the
 //  same geometry and renderer, so the line does not change when the pencil
 //  lifts. Only the pages in reach keep these bitmaps (`isResident`); the
 //  others hold just the document and redraw when they come back. The
@@ -116,12 +118,36 @@ final class InkSurfaceView: UIView {
         didSet { if renderScale != oldValue { applyScale() } }
     }
 
+    /// The layers back to front, set once in `init`, so the order the views
+    /// join in cannot change it. The highlights sit under all the writing,
+    /// the legacy underlay included, whatever order they were written in.
+    private enum Depth {
+        static let markerTiles: CGFloat = 1
+        static let liftedMarkers: CGFloat = 2
+        static let liveMarker: CGFloat = 3
+        static let underlay: CGFloat = 4
+        static let liftedLegacy: CGFloat = 5
+        static let inkTiles: CGFloat = 6
+        static let liftedInk: CGFloat = 7
+        static let livePen: CGFloat = 8
+        static let overlay: CGFloat = 9
+    }
+
     private let underlayLayer = CALayer()
-    /// Holds the tiles of the committed ink; draws nothing itself. A single
-    /// page-sized bitmap gets no partial updates from CoreAnimation: every
-    /// lift redrew the whole page.
-    private let committedContainer = UIView()
-    private var tiles: [TileIndex: DrawingView] = [:]
+    /// The tiles of the committed ink, the highlights' or the rest's, in a
+    /// container that draws nothing itself. A single page-sized bitmap gets
+    /// no partial updates from CoreAnimation: every lift redrew the whole
+    /// page.
+    private final class TileLayer {
+        let markers: Bool
+        let container = UIView()
+        var tiles: [TileIndex: DrawingView] = [:]
+
+        init(markers: Bool) { self.markers = markers }
+    }
+    private let markerTiles = TileLayer(markers: true)
+    private let inkTiles = TileLayer(markers: false)
+    private var tileLayers: [TileLayer] { [markerTiles, inkTiles] }
     private struct TileIndex: Hashable { var col: Int; var row: Int }
     /// Tiles are sized in pixels, so every tile origin falls on the page's
     /// pixel grid, also on iPhone with its fractional `renderScale`.
@@ -174,8 +200,11 @@ final class InkSurfaceView: UIView {
     /// moved; above the committed ink, below the live stroke. Frame zero
     /// when nothing is lifted.
     private let selectionView = DrawingView()
-    /// Where `selectionView` was at the pick-up: it draws relative to this,
-    /// not to its frame, so the drag moves its pixels unchanged.
+    /// The lifted highlights, likewise, above the other highlights and
+    /// under all the writing. Frame zero when no highlight is lifted.
+    private let liftedMarkersView = DrawingView()
+    /// Where the lifted views were at the pick-up: they draw relative to
+    /// this, not to their frames, so the drag moves their pixels unchanged.
     private var liftOrigin = CGPoint.zero
     /// The lifted legacy strokes' image, between the underlay and our ink.
     private let liftedLegacyLayer = CALayer()
@@ -225,8 +254,10 @@ final class InkSurfaceView: UIView {
         // No implicit animation when the image or the frame changes.
         underlayLayer.actions = ["contents": NSNull(), "bounds": NSNull(), "position": NSNull()]
         underlayLayer.frame = bounds
+        underlayLayer.zPosition = Depth.underlay
         layer.addSublayer(underlayLayer)
         // Lifted legacy ink stays under our own, as on the page.
+        liftedLegacyLayer.zPosition = Depth.liftedLegacy
         liftedLegacyLayer.isHidden = true
         liftedLegacyLayer.actions = ["contents": NSNull(), "bounds": NSNull(), "position": NSNull(),
                                      "hidden": NSNull()]
@@ -238,7 +269,7 @@ final class InkSurfaceView: UIView {
         ringLayer.lineWidth = 1
         ringLayer.lineDashPattern = [3, 3]
         ringLayer.isHidden = true
-        ringLayer.zPosition = 1
+        ringLayer.zPosition = Depth.overlay
         ringLayer.actions = ["position": NSNull(), "path": NSNull(), "hidden": NSNull(),
                              "strokeColor": NSNull()]
         layer.addSublayer(ringLayer)
@@ -251,7 +282,7 @@ final class InkSurfaceView: UIView {
         outlineLayer.lineDashPattern = [4, 3]
         outlineLayer.strokeColor = accent.cgColor
         outlineLayer.isHidden = true
-        outlineLayer.zPosition = 1
+        outlineLayer.zPosition = Depth.overlay
         outlineLayer.actions = ["position": NSNull(), "path": NSNull(), "hidden": NSNull(),
                                 "strokeColor": NSNull()]
         layer.addSublayer(outlineLayer)
@@ -268,12 +299,20 @@ final class InkSurfaceView: UIView {
         selectionTap.isEnabled = false
         addInteraction(editMenu)
 
-        // The container and the live view join the hierarchy in
+        // The containers and the live view join the hierarchy in
         // `applyResidency`; the tiles follow the ink, the live view the
-        // stroke, so only the container follows the bounds.
-        committedContainer.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        committedContainer.backgroundColor = .clear
-        committedContainer.isUserInteractionEnabled = false
+        // stroke, so only the containers follow the bounds.
+        for tileLayer in tileLayers {
+            tileLayer.container.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            tileLayer.container.backgroundColor = .clear
+            tileLayer.container.isUserInteractionEnabled = false
+        }
+        markerTiles.container.layer.zPosition = Depth.markerTiles
+        inkTiles.container.layer.zPosition = Depth.inkTiles
+        liftedMarkersView.layer.zPosition = Depth.liftedMarkers
+        selectionView.layer.zPosition = Depth.liftedInk
+        // The live view's depth follows the tool, at each stroke's start.
+        liveView.layer.zPosition = Depth.livePen
         liveView.drawHandler = { [unowned self] rect, ctx in
             guard let live else { return }
             // The view sits at `liveFrame`: the context moves to page
@@ -286,14 +325,18 @@ final class InkSurfaceView: UIView {
                                  rect: rect.offsetBy(dx: origin.x, dy: origin.y), in: ctx)
             }
         }
-        selectionView.drawHandler = { [unowned self] rect, ctx in
-            let origin = liftOrigin
-            let pageRect = rect.offsetBy(dx: origin.x, dy: origin.y)
-            ctx.translateBy(x: -origin.x, y: -origin.y)
-            let owned = document.owned
-            for index in liftedOwned where index < owned.count && owned[index].bounds.intersects(pageRect) {
-                InkRenderer.draw(owned[index], paper: paper,
-                                 rect: pageRect.contains(owned[index].bounds) ? nil : pageRect, in: ctx)
+        // Each lifted view draws only its own kind.
+        for (view, markers) in [(selectionView, false), (liftedMarkersView, true)] {
+            view.drawHandler = { [unowned self] rect, ctx in
+                let origin = liftOrigin
+                let pageRect = rect.offsetBy(dx: origin.x, dy: origin.y)
+                ctx.translateBy(x: -origin.x, y: -origin.y)
+                let owned = document.owned
+                for index in liftedOwned where index < owned.count && owned[index].isMarker == markers
+                    && owned[index].bounds.intersects(pageRect) {
+                    InkRenderer.draw(owned[index], paper: paper,
+                                     rect: pageRect.contains(owned[index].bounds) ? nil : pageRect, in: ctx)
+                }
             }
         }
         document.onChange = { [weak self] change in self?.documentChanged(change) }
@@ -321,13 +364,15 @@ final class InkSurfaceView: UIView {
             // Only the height moved: the bottom row's tiles follow the edge
             // in place (`.redraw` repaints them), and a tile left outside
             // goes.
-            for (index, tile) in tiles {
-                let frame = cell(index).intersection(bounds)
-                if frame.isEmpty {
-                    tile.removeFromSuperview()
-                    tiles[index] = nil
-                } else if tile.frame != frame {
-                    tile.frame = frame
+            for tileLayer in tileLayers {
+                for (index, tile) in tileLayer.tiles {
+                    let frame = cell(index).intersection(bounds)
+                    if frame.isEmpty {
+                        tile.removeFromSuperview()
+                        tileLayer.tiles[index] = nil
+                    } else if tile.frame != frame {
+                        tile.frame = frame
+                    }
                 }
             }
             // Paper back after a shrink: the ink past the old edge gets its
@@ -335,7 +380,7 @@ final class InkSurfaceView: UIView {
             if bounds.height > tileLayout.height {
                 let oldEdge = tileLayout.height
                 for entry in document.owned where entry.bounds.maxY > oldEdge {
-                    invalidate(entry.bounds, creating: true)
+                    invalidate(entry.bounds, in: tileLayer(for: entry), creating: true)
                 }
             }
             // The prepared underlay is page-sized.
@@ -416,7 +461,9 @@ final class InkSurfaceView: UIView {
         UIView.performWithoutAnimation {
             // The polylines first: the tiles built below draw from them.
             document.keepsPolylines = isResident
-            setResident(committedContainer, isResident, frame: bounds)
+            for tileLayer in tileLayers {
+                setResident(tileLayer.container, isResident, frame: bounds)
+            }
             if !isResident { removeTiles() }
             applyLiveResidency()
             if isResident {
@@ -438,17 +485,14 @@ final class InkSurfaceView: UIView {
     }
 
     /// One live store, on the active iPad page. Its frame is empty until a
-    /// stroke starts: nothing shown, no store. The lifted selection's view
-    /// likewise, until a drag lifts it; it goes under the live stroke.
+    /// stroke starts: nothing shown, no store. The lifted selection's views
+    /// likewise, until a drag lifts them; their depth puts them in place.
     private func applyLiveResidency() {
         UIView.performWithoutAnimation {
             let resident = isResident && isActive && isPencilDevice
+            setResident(liftedMarkersView, resident, frame: .zero)
             setResident(selectionView, resident, frame: .zero)
             setResident(liveView, resident, frame: .zero)
-            if resident {
-                bringSubviewToFront(selectionView)
-                bringSubviewToFront(liveView)
-            }
         }
     }
 
@@ -472,9 +516,9 @@ final class InkSurfaceView: UIView {
             liveView.contentScaleFactor = scale
             liveView.setNeedsDisplay()
         }
-        if selectionView.contentScaleFactor != scale {
-            selectionView.contentScaleFactor = scale
-            selectionView.setNeedsDisplay()
+        for view in [selectionView, liftedMarkersView] where view.contentScaleFactor != scale {
+            view.contentScaleFactor = scale
+            view.setNeedsDisplay()
         }
         // The tile side follows the scale, and the selection's pixel grid.
         if tileLayout.scale != scale {
@@ -497,37 +541,44 @@ final class InkSurfaceView: UIView {
         return CGRect(x: CGFloat(index.col) * side, y: CGFloat(index.row) * side, width: side, height: side)
     }
 
-    /// The tile at `index`, made when `creating` and the cell meets the
-    /// page. A new tile draws whole on its first commit.
-    private func tile(at index: TileIndex, creating: Bool) -> DrawingView? {
-        if let tile = tiles[index] { return tile }
+    /// The tile at `index` in `tileLayer`, made when `creating` and the cell
+    /// meets the page. A new tile draws whole on its first commit.
+    private func tile(at index: TileIndex, in tileLayer: TileLayer, creating: Bool) -> DrawingView? {
+        if let tile = tileLayer.tiles[index] { return tile }
         guard creating else { return nil }
         let frame = cell(index).intersection(bounds)
         guard !frame.isEmpty else { return nil }
         let tile = DrawingView(frame: frame)
+        let markers = tileLayer.markers
         tile.drawHandler = { [unowned self, unowned tile] rect, ctx in
             // The tile's origin is whole pixels, so the page's ink lands on
             // the same pixels in every tile and in the live view.
             let origin = tile.frame.origin
             var drawn = 0
-            HitchLog.measure("tile.draw (\(index.col),\(index.row)) \(Int(rect.width))×\(Int(rect.height)), \(drawn) linii") {
+            HitchLog.measure("tile.draw \(markers ? "marcaj" : "scris") (\(index.col),\(index.row)) \(Int(rect.width))×\(Int(rect.height)), \(drawn) linii") {
                 ctx.translateBy(x: -origin.x, y: -origin.y)
-                drawn = InkRenderer.draw(document.owned, paper: paper,
+                drawn = InkRenderer.draw(document.owned, markers: markers, paper: paper,
                                          rect: rect.offsetBy(dx: origin.x, dy: origin.y),
                                          skipping: liftedOwned, in: ctx)
             }
         }
-        UIView.performWithoutAnimation { committedContainer.addSubview(tile) }
+        UIView.performWithoutAnimation { tileLayer.container.addSubview(tile) }
         tile.contentScaleFactor = bitmapScale
         // Whole on its first commit, whatever rect asked for it.
         tile.setNeedsDisplay()
-        tiles[index] = tile
+        tileLayer.tiles[index] = tile
         return tile
     }
 
-    /// Marks `pageRect` dirty in every tile it covers; `creating` makes the
-    /// tiles that are not there yet (new ink), erased ink needs none.
-    private func invalidate(_ pageRect: CGRect, creating: Bool) {
+    /// The tiles `entry` is drawn in.
+    private func tileLayer(for entry: InkEntry) -> TileLayer {
+        entry.isMarker ? markerTiles : inkTiles
+    }
+
+    /// Marks `pageRect` dirty in every tile of `tileLayer` it covers;
+    /// `creating` makes the tiles that are not there yet (new ink), erased
+    /// ink needs none.
+    private func invalidate(_ pageRect: CGRect, in tileLayer: TileLayer, creating: Bool) {
         let rect = pageRect.intersection(bounds)
         guard !rect.isEmpty else { return }
         // A rect ending on a tile edge does not reach the next tile.
@@ -536,27 +587,47 @@ final class InkSurfaceView: UIView {
         let c1 = max(Int(ceil(rect.maxX / side)) - 1, c0), r1 = max(Int(ceil(rect.maxY / side)) - 1, r0)
         for row in r0...r1 {
             for col in c0...c1 {
-                guard let tile = tile(at: TileIndex(col: col, row: row), creating: creating) else { continue }
+                guard let tile = tile(at: TileIndex(col: col, row: row), in: tileLayer, creating: creating)
+                else { continue }
                 let origin = tile.frame.origin
                 tile.setNeedsDisplay(rect.intersection(tile.frame).offsetBy(dx: -origin.x, dy: -origin.y))
             }
         }
     }
 
+    /// Ink of either kind left `pageRect` (erased, lifted, moved away): the
+    /// tiles there in both layers, none made.
+    private func invalidateLeaving(_ pageRect: CGRect) {
+        for tileLayer in tileLayers {
+            invalidate(pageRect, in: tileLayer, creating: false)
+        }
+    }
+
+    /// Ink of either kind arrived in `pageRect`: each owned stroke there
+    /// marks its own layer, so tiles are made only where its kind is.
+    private func invalidateArriving(_ pageRect: CGRect) {
+        for entry in document.owned where entry.bounds.intersects(pageRect) {
+            invalidate(entry.bounds.insetBy(dx: -2, dy: -2).intersection(pageRect), in: tileLayer(for: entry),
+                       creating: true)
+        }
+    }
+
     /// Tiles from scratch, for the current bounds and scale: one where each
-    /// owned stroke is, none elsewhere.
+    /// owned stroke is, in its kind's layer, none elsewhere.
     private func rebuildTiles() {
         guard isResident else { return }
         removeTiles()
         tileLayout = (bounds.width, bounds.height, bitmapScale)
         for entry in document.owned {
-            invalidate(entry.bounds, creating: true)
+            invalidate(entry.bounds, in: tileLayer(for: entry), creating: true)
         }
     }
 
     private func removeTiles() {
-        for tile in tiles.values { tile.removeFromSuperview() }
-        tiles.removeAll()
+        for tileLayer in tileLayers {
+            for tile in tileLayer.tiles.values { tile.removeFromSuperview() }
+            tileLayer.tiles.removeAll()
+        }
         tileLayout = (0, 0, 0)
     }
 
@@ -577,9 +648,12 @@ final class InkSurfaceView: UIView {
         hoverLocation = nil
         switch mode {
         case .pen(let profile, let color, let width):
+            liveView.layer.zPosition = Depth.livePen
             live = LiveStroke(profile: profile, baseWidth: width, color: color)
             appendLive(touch, event: event)
         case .highlighter(let color, let width):
+            // Under all the writing while drawn too, over the highlights.
+            liveView.layer.zPosition = Depth.liveMarker
             live = LiveStroke(profile: .highlighter, baseWidth: width, color: color)
             appendLive(touch, event: event)
         case .eraser(let width):
@@ -688,8 +762,11 @@ final class InkSurfaceView: UIView {
             UIView.performWithoutAnimation { liveView.frame = liveFrame }
             liveView.setNeedsDisplay()
         } else {
+            // Whole device pixels: a clip through a pixel would keep part of
+            // the old ink there and paint the new over it.
             let origin = liveView.frame.origin
-            liveView.setNeedsDisplay(dirty.insetBy(dx: -2, dy: -2).offsetBy(dx: -origin.x, dy: -origin.y))
+            let rect = pixelAligned(dirty.insetBy(dx: -2, dy: -2))
+            liveView.setNeedsDisplay(rect.offsetBy(dx: -origin.x, dy: -origin.y))
         }
     }
 
@@ -771,23 +848,24 @@ final class InkSurfaceView: UIView {
         // when it comes back. The save still happens.
         if isResident {
             switch change {
-            case .appended(_, let bounds):
+            case .appended(let stroke, let bounds):
                 // Only our own strokes are appended one by one; a paste
                 // arrives as `.replaced`.
-                invalidate(bounds.insetBy(dx: -2, dy: -2), creating: true)
+                let layer = stroke.ink.inkType == .marker ? markerTiles : inkTiles
+                invalidate(bounds.insetBy(dx: -2, dy: -2), in: layer, creating: true)
             case .removed(let bounds, let legacyChanged):
-                invalidate(bounds.insetBy(dx: -2, dy: -2), creating: false)
+                invalidateLeaving(bounds.insetBy(dx: -2, dy: -2))
                 // While the eraser moves, only the cut spot is rendered
                 // again; the whole page waits for the lift.
                 if legacyChanged {
                     if erasing != nil { patchUnderlay(bounds) } else { refreshUnderlay() }
                 }
             case .moved(let from, let to, let legacyChanged):
-                invalidate(from.insetBy(dx: -2, dy: -2), creating: false)
-                invalidate(to.insetBy(dx: -2, dy: -2), creating: true)
+                invalidateLeaving(from.insetBy(dx: -2, dy: -2))
+                invalidateArriving(to.insetBy(dx: -2, dy: -2))
                 if legacyChanged { refreshUnderlay() }
             case .added(let bounds, let legacyChanged):
-                invalidate(bounds.insetBy(dx: -2, dy: -2), creating: true)
+                invalidateArriving(bounds.insetBy(dx: -2, dy: -2))
                 if legacyChanged { refreshUnderlay() }
             case .replaced:
                 rebuildTiles()
@@ -799,8 +877,10 @@ final class InkSurfaceView: UIView {
 
     private func redrawAll() {
         guard isResident else { return }
-        HitchLog.note("redrawAll, \(document.owned.count) linii, \(tiles.count) plăci")
-        for tile in tiles.values { tile.setNeedsDisplay() }
+        HitchLog.note("redrawAll, \(document.owned.count) linii, \(markerTiles.tiles.count + inkTiles.tiles.count) plăci")
+        for tileLayer in tileLayers {
+            for tile in tileLayer.tiles.values { tile.setNeedsDisplay() }
+        }
         if live != nil { liveView.setNeedsDisplay() }
         refreshUnderlay()
     }
@@ -1027,7 +1107,10 @@ final class InkSurfaceView: UIView {
         // lands: only what this drag lifted moves.
         if !liftedOwned.isEmpty {
             UIView.performWithoutAnimation {
-                selectionView.frame.origin = CGPoint(x: liftOrigin.x + drag.offset.dx, y: liftOrigin.y + drag.offset.dy)
+                let origin = CGPoint(x: liftOrigin.x + drag.offset.dx, y: liftOrigin.y + drag.offset.dy)
+                for view in [selectionView, liftedMarkersView] where !view.bounds.isEmpty {
+                    view.frame.origin = origin
+                }
             }
         }
         if !liftedLegacy.isEmpty {
@@ -1059,9 +1142,10 @@ final class InkSurfaceView: UIView {
     }
 
     /// Takes the selection out of the page: the owned strokes into
-    /// `selectionView`, drawn by the same renderer on the same pixel grid,
-    /// the legacy ones into `liftedLegacyLayer` over an underlay without
-    /// them. The tiles skip what was lifted. One CA commit, so no frame has
+    /// `selectionView` and the highlights into `liftedMarkersView`, drawn by
+    /// the same renderer on the same pixel grid, the legacy ones into
+    /// `liftedLegacyLayer` over an underlay without them. The tiles skip
+    /// what was lifted. One CA commit, so no frame has
     /// the ink twice or not at all.
     private func pickUp() {
         guard let selection else { return }
@@ -1076,11 +1160,20 @@ final class InkSurfaceView: UIView {
                 var rect = CGRect.null
                 for index in ownedSet { rect = rect.union(document.owned[index].bounds) }
                 rect = rect.insetBy(dx: -2, dy: -2)
-                invalidate(rect, creating: false)
+                invalidateLeaving(rect)
+                // Both views share the frame; only a kind that was lifted
+                // gets it, and with it a store.
                 let frame = pixelAligned(rect)
+                let owned = document.owned
+                let liftsMarkers = ownedSet.contains { owned[$0].isMarker }
+                let liftsInk = ownedSet.contains { !owned[$0].isMarker }
                 liftOrigin = frame.origin
-                UIView.performWithoutAnimation { selectionView.frame = frame }
+                UIView.performWithoutAnimation {
+                    selectionView.frame = liftsInk ? frame : .zero
+                    liftedMarkersView.frame = liftsMarkers ? frame : .zero
+                }
                 selectionView.setNeedsDisplay()
+                liftedMarkersView.setNeedsDisplay()
             }
             if !legacySet.isEmpty {
                 // Rendered here only when the drag came before the images.
@@ -1101,7 +1194,7 @@ final class InkSurfaceView: UIView {
     }
 
     /// Puts a lifted selection down where it was let go: the document moves
-    /// the strokes, the tiles draw them there and `selectionView` empties,
+    /// the strokes, the tiles draw them there and the lifted views empty,
     /// in one CA commit. The lifted legacy image stays until the underlay
     /// that has them lands. Without a drag, nothing.
     private func drop() {
@@ -1121,7 +1214,10 @@ final class InkSurfaceView: UIView {
                 editingSelection = true
                 document.translate(selection.indices, by: offset)
                 editingSelection = false
-                UIView.performWithoutAnimation { selectionView.frame = .zero }
+                UIView.performWithoutAnimation {
+                    selectionView.frame = .zero
+                    liftedMarkersView.frame = .zero
+                }
             }
             var shift = CGAffineTransform(translationX: offset.dx, y: offset.dy)
             let loop = selection.loop.copy(using: &shift) ?? selection.loop
@@ -1144,8 +1240,11 @@ final class InkSurfaceView: UIView {
         let owned = document.owned
         var rect = CGRect.null
         for index in ownedSet where index < owned.count { rect = rect.union(owned[index].bounds) }
-        if !rect.isNull { invalidate(rect.insetBy(dx: -2, dy: -2), creating: false) }
-        UIView.performWithoutAnimation { selectionView.frame = .zero }
+        if !rect.isNull { invalidateLeaving(rect.insetBy(dx: -2, dy: -2)) }
+        UIView.performWithoutAnimation {
+            selectionView.frame = .zero
+            liftedMarkersView.frame = .zero
+        }
         if hadLegacy { refreshUnderlay() }
     }
 

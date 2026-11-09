@@ -159,7 +159,7 @@ mutare cu lasoul; ștergere; o pagină veche; o privire la miniatură; pagina pe
 | 2. Gumă pixel | Guma cu lățime fixă, ca înainte: linia se împarte în bucăți cu măști poligonale, exact formatul gumei PencilKit, randate de renderer-ul propriu (masca = decupaj). Fără operații booleene, un singur cod pe iOS 26 și 27. | **Livrată 8 nov 2026; Alex: „merge foarte bine”. Inelul gumei acceptat („foarte bine”), punctat și mai discret la cererea lui.** |
 | 2b. Performanță pe pagini pline | Dale de 256 pt pentru stratul fix, polilinii ținute minte, strat viu cât linia, pen stocat ca `.pen` și recunoscut după semnătură, gumă pe linii vechi prin petice compuse, salvare serializată în fundal. | **🚩 DE VERIFICAT pe iPad (9 nov 2026).** Implementată, revizuită, testată pe simulatoare; Alex a amânat testul pe dispozitiv. Vezi „De verificat” mai jos. |
 | 3. Lasou | Buclă punctată în culoarea caietului; se selectează liniile cu cel puțin jumătate din partea vizibilă în buclă (punctele după centru), pe toată cerneala, fără casete. Mutare cu Pencil-ul sau degetul, offset pe pixeli întregi, doar `transform`. Meniu „Taie”, „Copiază”, „Duplică”, „Șterge”; clipboard PKDrawing + PNG; lipirea rămâne apăsarea lungă. Un pas de undo pe acțiune. | **Implementată 9 nov 2026, revizuită, testată pe simulatoare (randarea liniilor mutate, regresii). Bucla cere Pencil: în testul lui Alex.** |
-| 4. Bara de instrumente mutabilă | Bara se poate andoca în stânga, în dreapta sau jos (nu sus: acolo e bara de calendar). Poziția se ține minte. Verticală pe laturi, orizontală jos. | Cerută de Alex pe 8 nov 2026 |
+| 4. Bara de instrumente mutabilă | Ții degetul ~0,4 s pe bară (și pe un buton), o tragi, la eliberare se lipește de cea mai apropiată margine: stânga, dreapta sau jos, niciodată sus. Verticală pe laturi, centrată sub rândul de sus; popover-ele de pe laturi prezentate de UIKit spre pagină; glisarea scurtă spre margine o ascunde în mâner. Ținută minte pe dispozitiv (`penToolbarEdge`). Doar iPad; pe ferestre înguste revine jos. | **Implementată 9 nov 2026, revizuită de trei ori, testată pe simulator (12 scenarii). În testul lui Alex.** |
 | 5. Miniaturi și curățenie | Miniaturi prin renderer-ul propriu (azi highlighter-ul apare galben opac în miniatură, pe pagină e translucid), dispar `PageCanvasView`, `CustomInkView`, `InkWidthProbe`, membrii morți din `CanvasProxy`. | |
 
 ### 🚩 De verificat (deschis)
@@ -177,6 +177,23 @@ deschisă:
 5. Paginile gel vechi arată la fel ca înainte (acum le desenează renderer-ul propriu).
 
 Cronometrele (`HitchLog`, doar Debug) rămân până la confirmare; apoi se scot din cod.
+
+### Highlighter-ul (9 nov 2026)
+
+Alex: highlighter-ul acoperea scrisul, lăsa cercuri în timpul desenării și nu era destul
+de gros. Reparat:
+- **Sub tot scrisul**, în orice ordine ar fi scris: straturile au o ordine fixă prin
+  `zPosition` (`InkSurfaceView.Depth`): dale de highlighter, highlighter ridicat de lasou,
+  highlighter viu, substratul PencilKit, linii vechi ridicate, dale de scris, scris ridicat,
+  pen viu, inel și contur. Două seturi de dale, create fiecare doar unde e cerneala de
+  felul lui. Datele nu se schimbă: ordinea din `PKDrawing` rămâne cea scrisă.
+- **Cercurile:** CoreGraphics desenează o linie lungă în loturi de ~128 de segmente și
+  compune fiecare lot separat, deci îmbinarea dintre loturi primea culoarea de două ori.
+  Acum conturul liniei se umple o singură dată (`replacePathWithStrokedPath` + `fillPath`),
+  pe un punct din patru din polilinie (unul pe arc de B-spline), ca să rămână rapid.
+- **Mai gros:** slider-ul merge până la 96, adică ~60 pt desenați; eticheta și
+  previzualizarea arată lățimea desenată.
+Testat pe simulatoare pixel cu pixel; acceptat de Alex pe iPad („E bine”, 9 nov 2026).
 
 ### Ce a învățat faza 1
 

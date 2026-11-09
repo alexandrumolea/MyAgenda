@@ -11,6 +11,8 @@
 //
 
 import SwiftUI
+import PencilKit
+import UIKit
 
 struct PenToolbar: View {
     @Bindable var pen: PenSettings
@@ -18,6 +20,10 @@ struct PenToolbar: View {
     var showsDrawingTools: Bool = true
     /// Tighter spacing, so the full bar fits beside the iPad tags panel.
     var compact = false
+    /// iPad: docked on a side, the bar runs top to bottom.
+    var edge: ToolbarEdge = .bottom
+    /// iPad: a hold that lifted the bar must not also press the button under it.
+    var move: ToolbarMove? = nil
     var onAddText: () -> Void
     var onAddChecklist: () -> Void
     var onAddPhoto: () -> Void
@@ -28,7 +34,9 @@ struct PenToolbar: View {
     @State private var showEraserOptions = false
 
     var body: some View {
-        HStack(spacing: compact ? 6 : 12) {
+        let vertical = edge != .bottom
+        let layout = vertical ? AnyLayout(VStackLayout(spacing: 12)) : AnyLayout(HStackLayout(spacing: compact ? 6 : 12))
+        layout {
             if showsDrawingTools {
                 inkToolButton(.pen, system: "applepencil.tip")
                 inkToolButton(.highlighter, system: "highlighter")
@@ -52,8 +60,13 @@ struct PenToolbar: View {
             iconButton("timer", action: onTimer)
             iconButton("plus.rectangle.on.rectangle", action: onAddPage)
         }
-        .padding(.horizontal, compact ? 12 : 16)
-        .padding(.vertical, 9)
+        .padding(.horizontal, vertical ? 9 : (compact ? 12 : 16))
+        .padding(.vertical, vertical ? 16 : 9)
+        // An open popover would point at where the button was.
+        .onChange(of: edge) {
+            showInkOptions = false
+            showEraserOptions = false
+        }
     }
 
     // MARK: - Components
@@ -61,7 +74,21 @@ struct PenToolbar: View {
     private var divider: some View {
         Rectangle()
             .fill(Color.primary.opacity(0.12))
-            .frame(width: 1, height: 26)
+            .frame(width: edge == .bottom ? 1 : 26, height: edge == .bottom ? 26 : 1)
+    }
+
+    /// The options popover of a tool button. Bottom: SwiftUI's, as always.
+    /// Sides: UIKit's (see SidePopover). A new anchor per edge: after moving,
+    /// SwiftUI's kept pointing at where the button had been.
+    private func optionsPopover<P: View>(_ isPresented: Binding<Bool>,
+                                         @ViewBuilder content: @escaping () -> P) -> some View {
+        Color.clear
+            .popover(isPresented: edge == .bottom ? isPresented : .constant(false), content: content)
+            .background {
+                SidePopover(isPresented: edge == .bottom ? .constant(false) : isPresented,
+                            edge: edge, content: content)
+            }
+            .id(edge)
     }
 
     /// Pen / highlighter: selecting shows a color dot; tapping again opens the
@@ -69,6 +96,7 @@ struct PenToolbar: View {
     private func inkToolButton(_ kind: PenSettings.ToolKind, system: String) -> some View {
         let isSelected = pen.tool == kind
         return Button {
+            guard move?.didLift != true else { return }
             if pen.tool == kind {
                 showInkOptions = true
             } else {
@@ -89,15 +117,14 @@ struct PenToolbar: View {
                 }
         }
         .buttonStyle(.plain)
-        .popover(isPresented: popoverBinding(for: kind)) {
-            InkOptionsView(pen: pen)
-        }
+        .background { optionsPopover(popoverBinding(for: kind)) { InkOptionsView(pen: pen) } }
     }
 
     /// Eraser: tapping it again (once selected) opens the size popover.
     private var eraserButton: some View {
         let isSelected = pen.tool == .eraser
         return Button {
+            guard move?.didLift != true else { return }
             if isSelected { showEraserOptions = true } else { pen.tool = .eraser }
         } label: {
             Image(systemName: "eraser.fill")
@@ -107,9 +134,7 @@ struct PenToolbar: View {
                 .background(isSelected ? Color.accentColor : Color.clear, in: Circle())
         }
         .buttonStyle(.plain)
-        .popover(isPresented: $showEraserOptions) {
-            EraserOptionsView(pen: pen)
-        }
+        .background { optionsPopover($showEraserOptions) { EraserOptionsView(pen: pen) } }
     }
 
     /// Only show the popover from the currently-active ink tool's button.
@@ -123,6 +148,7 @@ struct PenToolbar: View {
     private func toolButton(_ kind: PenSettings.ToolKind, system: String) -> some View {
         let isSelected = pen.tool == kind
         return Button {
+            guard move?.didLift != true else { return }
             pen.tool = kind
         } label: {
             Image(systemName: system)
@@ -135,7 +161,10 @@ struct PenToolbar: View {
     }
 
     private func iconButton(_ system: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button {
+            guard move?.didLift != true else { return }
+            action()
+        } label: {
             Image(systemName: system)
                 .font(.system(size: 17))
                 .frame(width: 34, height: 34)
@@ -145,13 +174,96 @@ struct PenToolbar: View {
     }
 }
 
+// MARK: - Side popover
+
+/// A tool's options beside a bar docked on a side, presented by UIKit:
+/// SwiftUI's popover ignored `arrowEdge` there and opened over the bar. The
+/// arrow points at the button and the card opens toward the page.
+struct SidePopover<Content: View>: UIViewRepresentable {
+    @Binding var isPresented: Bool
+    var edge: ToolbarEdge
+    var content: () -> Content
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> UIView {
+        let anchor = UIView()
+        anchor.isUserInteractionEnabled = false
+        return anchor
+    }
+
+    func updateUIView(_ anchor: UIView, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.isPresented = $isPresented
+        if let shown = coordinator.shown, shown.presentingViewController != nil {
+            if isPresented {
+                shown.rootView = content()
+            } else {
+                coordinator.shown = nil
+                shown.dismiss(animated: true)
+            }
+            return
+        }
+        coordinator.shown = nil
+        guard isPresented else { return }
+        var responder: UIResponder? = anchor.next
+        while let current = responder, !(current is UIViewController) { responder = current.next }
+        guard anchor.window != nil, let presenter = responder as? UIViewController,
+              presenter.presentedViewController == nil else {
+            // Nothing to present from: the button must still open it next time.
+            DispatchQueue.main.async { isPresented = false }
+            return
+        }
+        let card = UIHostingController(rootView: content())
+        card.sizingOptions = .preferredContentSize
+        card.view.backgroundColor = .clear
+        // Outside the SwiftUI tree the notebook's tint arrives only this way.
+        card.view.tintColor = anchor.tintColor
+        card.modalPresentationStyle = .popover
+        if let popover = card.popoverPresentationController {
+            popover.sourceView = anchor
+            popover.sourceRect = anchor.bounds
+            popover.permittedArrowDirections = edge == .left ? .left : .right
+            // The card itself is the glass, as with SwiftUI's presentationBackground(.clear).
+            popover.backgroundColor = .clear
+            popover.delegate = coordinator
+        }
+        coordinator.shown = card
+        presenter.present(card, animated: true)
+    }
+
+    static func dismantleUIView(_ anchor: UIView, coordinator: Coordinator) {
+        coordinator.shown?.dismiss(animated: false)
+    }
+
+    final class Coordinator: NSObject, UIPopoverPresentationControllerDelegate {
+        var shown: UIHostingController<Content>?
+        var isPresented: Binding<Bool>?
+
+        /// A popover in a narrow window too, never a sheet.
+        func adaptivePresentationStyle(for controller: UIPresentationController,
+                                       traitCollection: UITraitCollection) -> UIModalPresentationStyle { .none }
+
+        func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+            shown = nil
+            isPresented?.wrappedValue = false
+        }
+    }
+}
+
 // MARK: - Ink options popover (color + width slider), as a Liquid Glass card
 
 struct InkOptionsView: View {
     @Bindable var pen: PenSettings
 
     private var widthRange: ClosedRange<Double> {
-        pen.tool == .highlighter ? 6...44 : 0.5...18
+        pen.tool == .highlighter ? 6...96 : 0.5...18
+    }
+
+    /// The width the line is drawn with: the highlighter's chisel draws much
+    /// narrower than its stored size.
+    private var shownWidth: CGFloat {
+        pen.tool == .highlighter ? InkGeometry.width(for: pen.activeWidth, inkType: .marker) : pen.activeWidth
     }
 
     var body: some View {
@@ -194,7 +306,7 @@ struct InkOptionsView: View {
                 HStack {
                     Text("Grosime").font(.subheadline).foregroundStyle(.secondary)
                     Spacer()
-                    Text(String(format: "%.1f pt", pen.activeWidth))
+                    Text(String(format: "%.1f pt", shownWidth))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -212,9 +324,9 @@ struct InkOptionsView: View {
                 // Live preview
                 Capsule()
                     .fill(pen.color)
-                    .frame(height: max(pen.activeWidth, 1))
+                    .frame(height: max(shownWidth, 1))
                     .frame(maxWidth: .infinity)
-                    .frame(height: 44)
+                    .frame(height: pen.tool == .highlighter ? 64 : 44)
             }
         }
         .padding(20)

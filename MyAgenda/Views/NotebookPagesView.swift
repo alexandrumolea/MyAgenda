@@ -61,9 +61,14 @@ struct NotebookPagesView: View {
     @State private var pagePull = PagePullState()
     /// Where the docked pen toolbar takes touches (see ToolbarDock).
     @State private var dockRegions = DockHitRegions()
+    /// iPad: holding the pen toolbar moves it to another edge.
+    @State private var toolbarMove = ToolbarMove()
     /// Live safe-area insets of the screen. The page itself always runs edge
     /// to edge; only the floating controls use these.
     @State private var safeTop: CGFloat = 0
+    /// `safeTop` as of the last time the status bar was shown; minimal mode
+    /// hides it and its inset with it.
+    @State private var statusBarTop: CGFloat = 0
     /// The page to reopen, if it hasn't synced in yet (with when it was asked).
     @State private var pendingPage: (id: UUID, since: Date)?
     private let position = ReadingPosition.shared
@@ -212,6 +217,7 @@ struct NotebookPagesView: View {
         .statusBarHidden(topBarHidden)
         .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.top } action: { top in
             safeTop = top
+            if !topBarHidden { statusBarTop = top }
         }
         .animation(.snappy(duration: 0.28), value: showTagsSidebar)
         // Dark paper turns the whole app dark (bars, menus, status bar), so it
@@ -652,7 +658,11 @@ struct NotebookPagesView: View {
             // would cover, with the keyboard (shrinking the page made it jump).
             .ignoresSafeArea(.keyboard, edges: .bottom)
             // Pulling past the last page: a glass "+" grows from the right edge.
-            .overlay(alignment: .trailing) { PagePullHint(state: pagePull) }
+            .overlay(alignment: .trailing) {
+                // Clear of a pen toolbar docked on the right.
+                PagePullHint(state: pagePull)
+                    .padding(.trailing, toolbarMove.edge == .right ? 64 : 0)
+            }
             .simultaneousGesture(
                 MagnifyGesture()
                     .onEnded { value in
@@ -673,17 +683,22 @@ struct NotebookPagesView: View {
         }
     }
 
-    /// Pen toolbar layer (see ToolbarDock): always just above the home
-    /// indicator, and hidden while the editing bar is up.
+    /// Pen toolbar layer (see ToolbarDock): just above the home indicator, or
+    /// on the side it was moved to (iPad), and hidden while the editing bar is up.
     @ViewBuilder private var bottomToolbar: some View {
         if !pages.isEmpty {
-            ToolbarDock(regions: dockRegions) {
+            ToolbarDock(regions: dockRegions, move: isPhone ? nil : toolbarMove) {
                 BottomToolbarLayer(
                     pen: pen, proxy: proxy, regions: dockRegions, isPhone: isPhone,
                     // While editing, the bar above the keyboard is the only one.
                     showsToolbar: editingTextBoxID == nil && editingChecklistID == nil,
                     toolbarHidden: $toolbarHidden,
                     leadingInset: panelInset,
+                    move: isPhone ? nil : toolbarMove,
+                    // Below the top row, with the status bar's inset even in
+                    // minimal mode (where it is gone), so a side bar stays put
+                    // when the mode toggles.
+                    topReserve: max(statusBarTop, 32) + 8 + Self.barHeight + 12,
                     onAddText: addTextBoxOnFreeSpot,
                     onAddChecklist: addChecklistOnFreeSpot,
                     onAddPhoto: { showPhotoPicker = true },

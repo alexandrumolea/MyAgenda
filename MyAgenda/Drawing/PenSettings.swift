@@ -153,8 +153,11 @@ final class PenSettings {
             // The writing pen uses the user-selected ink style.
             return PKInkingTool(penInk.inkType, color: UIColor(penColor), width: width)
         case .highlighter:
-            // `.marker` = translucent highlighter ink.
-            return PKInkingTool(.marker, color: UIColor(highlighterColor), width: highlighterWidth)
+            // `.marker` = translucent highlighter ink. PencilKit's marker
+            // stops short of the widths our slider reaches.
+            let range = PKInkingTool.InkType.marker.validWidthRange
+            return PKInkingTool(.marker, color: UIColor(highlighterColor),
+                                width: min(max(highlighterWidth, range.lowerBound), range.upperBound))
         case .eraser:
             let range = Self.eraserWidthRange
             // Pixel eraser with exactly the chosen size, whatever the pressure.

@@ -26,6 +26,9 @@ nonisolated struct InkEntry {
     /// the page is resident so a redraw strokes it instead of evaluating
     /// PencilKit's spline again; nil when not kept.
     var polyline: [InkPoint]?
+
+    /// Highlights are drawn on a layer of their own, under all the writing.
+    var isMarker: Bool { stroke.ink.inkType == .marker }
 }
 
 @MainActor
