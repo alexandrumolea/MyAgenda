@@ -268,7 +268,7 @@ struct InkOptionsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(pen.tool == .highlighter ? "Highlighter" : "Stilou")
+            Text(pen.tool == .highlighter ? "Marker" : "Stilou")
                 .font(.headline)
 
             // Ink style (writing pen only)

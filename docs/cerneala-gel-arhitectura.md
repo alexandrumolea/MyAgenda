@@ -160,7 +160,7 @@ mutare cu lasoul; ștergere; o pagină veche; o privire la miniatură; pagina pe
 | 2b. Performanță pe pagini pline | Dale de 256 pt pentru stratul fix, polilinii ținute minte, strat viu cât linia, pen stocat ca `.pen` și recunoscut după semnătură, gumă pe linii vechi prin petice compuse, salvare serializată în fundal. | **🚩 DE VERIFICAT pe iPad (9 nov 2026).** Implementată, revizuită, testată pe simulatoare; Alex a amânat testul pe dispozitiv. Vezi „De verificat” mai jos. |
 | 3. Lasou | Buclă punctată în culoarea caietului; se selectează liniile cu cel puțin jumătate din partea vizibilă în buclă (punctele după centru), pe toată cerneala, fără casete. Mutare cu Pencil-ul sau degetul, offset pe pixeli întregi, doar `transform`. Meniu „Taie”, „Copiază”, „Duplică”, „Șterge”; clipboard PKDrawing + PNG; lipirea rămâne apăsarea lungă. Un pas de undo pe acțiune. | **Implementată 9 nov 2026, revizuită, testată pe simulatoare (randarea liniilor mutate, regresii). Bucla cere Pencil: în testul lui Alex.** |
 | 4. Bara de instrumente mutabilă | Ții degetul ~0,4 s pe bară (și pe un buton), o tragi, la eliberare se lipește de cea mai apropiată margine: stânga, dreapta sau jos, niciodată sus. Verticală pe laturi, centrată sub rândul de sus; popover-ele de pe laturi prezentate de UIKit spre pagină; glisarea scurtă spre margine o ascunde în mâner. Ținută minte pe dispozitiv (`penToolbarEdge`). Doar iPad; pe ferestre înguste revine jos. | **Implementată 9 nov 2026, revizuită de trei ori, testată pe simulator (12 scenarii). În testul lui Alex.** |
-| 5. Miniaturi și curățenie | Miniaturi prin renderer-ul propriu (azi highlighter-ul apare galben opac în miniatură, pe pagină e translucid), dispar `PageCanvasView`, `CustomInkView`, `InkWidthProbe`, membrii morți din `CanvasProxy`. | |
+| 5. Miniaturi și curățenie | Miniaturile folosesc renderer-ul paginii (`InkRenderer.drawPage`: highlighter, apoi liniile vechi prin PencilKit, apoi scrisul nostru), `renderVersion` 7. Șterse `PageCanvasView`, `CustomInkView`, `InkWidthProbe` (~1.300 de linii), membrii morți din `CanvasProxy` și `PenSettings`; `BallpointTuning` mutat în `InkGeometry`. Titlul popover-ului: „Marker”. | **Implementată 9 nov 2026, revizuită, testată pe simulatoare (9 verificări, plus comparație cu build-ul vechi). Necomisă.** |
 
 ### 🚩 De verificat (deschis)
 
@@ -198,7 +198,16 @@ Testat pe simulatoare pixel cu pixel; acceptat de Alex pe iPad („E bine”, 9 
 ### Ce a învățat faza 1
 
 - Pixul cu gel nu are codiță la ridicare și nici subțiere la final: orice pixel dincolo de
-  ultima atingere reală e un defect. Rămân intrarea scurtă și respirația lățimii (~±30%).
+  ultima atingere reală e un defect. Rămân intrarea scurtă și respirația lățimii (~±40%).
+- Marginea moale (9 nov 2026): pixul se desenează ca un miez opac cu 0,25 pt mai subțire sub
+  un halou translucid (alfa 0,65) cu 0,6 pt mai lat, o singură panglică pe linie umplută o
+  dată, ca marginea să treacă treptat, ca la PencilKit, iar scrisul să fie puțin mai plin
+  (cu ≈ 0,25 pt); unirea contururilor pe loturi arăta la fel, dar redesenarea unei dale
+  costa de 3–8 ori mai mult, panglica costă ≈ ×1,03–1,18.
+- Traseul netezit (9 nov 2026): la liniile noi de pix, fiecare punct e media ponderată a
+  vecinilor pe o rază de 3 pt de-a lungul liniei (`PathSmoother`), ca tremurul mâinii din
+  scrisul lent să nu se vadă; vârful, capetele și colțurile (de la 50° în sus) rămân brute, iar
+  lățimea nu se atinge.
 - Fără atingeri prezise: ele remodelează vârful la fiecare cadru și fac scrisul mai puțin
   rotund. Latența sub un cadru e acceptată.
 - Memoria e mărginită de paginile vizibile: `TabView`-ul paginat montează toate paginile, deci

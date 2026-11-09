@@ -5,8 +5,9 @@
 //  Draws our own ink with CoreGraphics: round-capped segments along the
 //  polyline `InkGeometry` makes of a stroke. Both the live line and the
 //  committed bitmap go through `draw(_:inkType:color:in:)`, so the pixels
-//  are the same before and after the pencil lifts. Legacy strokes are not
-//  drawn here: PencilKit renders them into an underlay image.
+//  are the same before and after the pencil lifts. Legacy strokes are left
+//  to PencilKit, as an image under our ink (the page's underlay, and the
+//  thumbnails through `drawPage`).
 //
 
 import PencilKit
@@ -17,10 +18,29 @@ nonisolated enum InkRenderer {
     /// Consecutive points closer in width than this share one stroked path:
     /// with round joins the union is the same geometry, far fewer paths.
     private static let widthTolerance: CGFloat = 0.05
-    /// The marker's outline is built from one polyline point per B-spline
-    /// span: filling the outline of every point is too slow at large widths,
-    /// and a span is far shorter than the marker is wide.
-    private static let markerStride = Int(1 / InkGeometry.step)
+    /// Polyline points per B-spline span. The marker's outline and the pen's
+    /// halo are built from one point per span, counted from the stroke's
+    /// start so a growing live stroke keeps them: filling an outline of
+    /// every point is what costs, and a span is far shorter than the marker
+    /// is wide.
+    private static let spanStride = Int(1 / InkGeometry.step)
+    /// The pen's soft edge: a translucent halo this much wider than the line
+    /// under an opaque core this much narrower, so the antialiased edge ramps
+    /// over about twice as many pixels (closer to PencilKit's), and the line
+    /// reads slightly bolder, by about 0.25 pt.
+    private static let edgeGrow: CGFloat = 0.6
+    private static let edgeShrink: CGFloat = 0.25
+    /// The halo's opacity: enough to read as part of the line, not as a rim.
+    private static let edgeAlpha: CGFloat = 0.65
+    /// A span whose points stray further than this (points) from its chord
+    /// keeps them all in the halo: a fast tight curve would otherwise cut
+    /// the chord through the halo's `(edgeGrow + edgeShrink) / 2` margin and
+    /// bare the core.
+    private static let edgeChordError: CGFloat = 0.2
+    /// A turn sharper than this (radians) gets a round join on the halo's
+    /// outer side; below it one point on the mean normal misses the round
+    /// join by about 1 % of the halo's radius.
+    private static let edgeArcTurn: CGFloat = 0.3
 
     /// Strokes `polyline` in `color`, only the segments that can touch `rect`
     /// (the dirty rect, document coordinates) when given. Round caps and
@@ -50,13 +70,17 @@ nonisolated enum InkRenderer {
             ctx.setAlpha(markerAlpha)
             ctx.setFillColor(color.cgColor)
             ctx.setLineWidth(polyline[0].width)
-            if addLines(polyline, from: 0, to: polyline.count, stride: markerStride, touching: rect, in: ctx) {
+            let outline = CGMutablePath()
+            if addLines(polyline, from: 0, to: polyline.count, stride: spanStride, touching: rect, to: outline) {
+                ctx.addPath(outline)
                 ctx.replacePathWithStrokedPath()
                 ctx.fillPath()
             }
             return
         }
 
+        // Each batch's path is kept for the core, drawn over the halo.
+        var batches: [(path: CGPath, width: CGFloat)] = []
         var start = 0
         while start < polyline.count {
             let width = polyline[start].width
@@ -64,30 +88,155 @@ nonisolated enum InkRenderer {
             while end < polyline.count, abs(polyline[end].width - width) < widthTolerance {
                 end += 1
             }
-            ctx.setLineWidth(width)
             // Each batch begins at the previous point, so the segment into it
             // is drawn with the width of its end.
-            if addLines(polyline, from: max(start - 1, 0), to: end, touching: rect, in: ctx) {
-                ctx.strokePath()
+            let batch = CGMutablePath()
+            if addLines(polyline, from: max(start - 1, 0), to: end, touching: rect, to: batch) {
+                batches.append((batch, width))
             }
             start = end
         }
+        guard !batches.isEmpty else { return }
+        // The halo is one outline of the whole stroke, filled once: a
+        // translucent fill per batch would darken where batches overlap, and
+        // the union of their stroked outlines filled several times slower
+        // than the line itself. It leaves `rect` to the clip, so every tile
+        // and the live view fill the same shape and no seam shows.
+        ctx.saveGState()
+        ctx.setAlpha(edgeAlpha)
+        ctx.setFillColor(color.cgColor)
+        ctx.addPath(haloOutline(of: polyline))
+        ctx.fillPath(using: .winding)
+        ctx.restoreGState()
+        for batch in batches {
+            // Never under half the width: a hairline keeps its weight.
+            ctx.setLineWidth(max(batch.width - edgeShrink, batch.width / 2))
+            ctx.addPath(batch.path)
+            ctx.strokePath()
+        }
     }
 
-    /// Adds the segments of `polyline[start..<end]` whose padded box meets
-    /// `rect` (all of them when nil); a skipped segment ends the subpath and
-    /// the next kept one starts a new one. False when nothing was added.
-    /// With a `stride`, only every `stride`-th point counted from `start` and
-    /// the last one are joined: a growing stroke keeps the same points at
-    /// its start as samples arrive, so the live line and the committed one
-    /// match.
+    /// The halo: a ribbon `edgeGrow / 2` wider than the line on each side,
+    /// along every `spanStride`-th point and the last (all the points of a
+    /// span that bends away from its chord), round at both ends and on the
+    /// outer side of sharp turns; a single point is a disk. One closed path,
+    /// so the fill crosses two edges a scanline where the batches' stroked
+    /// outlines overlapped many times over.
+    private static func haloOutline(of polyline: [InkPoint]) -> CGPath {
+        var points: [InkPoint] = []
+        func keep(_ point: InkPoint) {
+            // A repeated location has no direction to offset from.
+            if let last = points.last, last.location == point.location {
+                points[points.count - 1] = point
+            } else {
+                points.append(point)
+            }
+        }
+        keep(polyline[0])
+        var index = 0
+        while index < polyline.count - 1 {
+            let next = min(index + spanStride, polyline.count - 1)
+            if spanBends(polyline, from: index, to: next) {
+                for k in index + 1 ..< next { keep(polyline[k]) }
+            }
+            keep(polyline[next])
+            // Back on the span grid, so the spans before a growing live
+            // stroke's tail are decided once.
+            index = next
+        }
+        func radius(_ k: Int) -> CGFloat { points[k].width / 2 + edgeGrow / 2 }
+        func offset(_ k: Int, _ angle: CGFloat) -> CGPoint {
+            CGPoint(x: points[k].location.x + cos(angle) * radius(k),
+                    y: points[k].location.y + sin(angle) * radius(k))
+        }
+        let path = CGMutablePath()
+        guard points.count > 1 else {
+            let r = radius(0), center = points[0].location
+            path.addEllipse(in: CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2))
+            return path
+        }
+        let directions = (1..<points.count).map { k in
+            atan2(points[k].location.y - points[k - 1].location.y, points[k].location.x - points[k - 1].location.x)
+        }
+        let last = points.count - 1
+
+        enum Step { case point(CGPoint), arc(Int, from: CGFloat, to: CGFloat) }
+        // One side, first point to last: `side` is +1 for the left, -1 for
+        // the right. A point on the mean normal at each turn, or on the
+        // outer side of a sharp one an arc between the two segments' normals.
+        func steps(_ side: CGFloat) -> [Step] {
+            var steps = [Step.point(offset(0, directions[0] + side * .pi / 2))]
+            for k in stride(from: 1, to: last, by: 1) {
+                var turn = directions[k] - directions[k - 1]
+                if turn > .pi { turn -= 2 * .pi } else if turn < -.pi { turn += 2 * .pi }
+                let normal = directions[k - 1] + side * .pi / 2
+                if turn * side < 0, abs(turn) > edgeArcTurn {
+                    steps.append(.arc(k, from: normal, to: normal + turn))
+                } else {
+                    steps.append(.point(offset(k, normal + turn / 2)))
+                }
+            }
+            steps.append(.point(offset(last, directions[last - 1] + side * .pi / 2)))
+            return steps
+        }
+
+        // Left side forward, round end, right side back, round start.
+        for (n, step) in steps(1).enumerated() {
+            switch step {
+            case .point(let point):
+                if n == 0 { path.move(to: point) } else { path.addLine(to: point) }
+            case .arc(let k, let from, let to):
+                path.addArc(center: points[k].location, radius: radius(k), startAngle: from, endAngle: to,
+                            clockwise: to < from)
+            }
+        }
+        path.addArc(center: points[last].location, radius: radius(last), startAngle: directions[last - 1] + .pi / 2,
+                    endAngle: directions[last - 1] - .pi / 2, clockwise: true)
+        for step in steps(-1).reversed() {
+            switch step {
+            case .point(let point):
+                path.addLine(to: point)
+            case .arc(let k, let from, let to):
+                path.addArc(center: points[k].location, radius: radius(k), startAngle: to, endAngle: from,
+                            clockwise: from < to)
+            }
+        }
+        path.addArc(center: points[0].location, radius: radius(0), startAngle: directions[0] - .pi / 2,
+                    endAngle: directions[0] - .pi * 1.5, clockwise: true)
+        path.closeSubpath()
+        return path
+    }
+
+    /// Whether a point inside `polyline[start...end]` strays more than
+    /// `edgeChordError` from the chord between its ends.
+    private static func spanBends(_ polyline: [InkPoint], from start: Int, to end: Int) -> Bool {
+        let a = polyline[start].location, b = polyline[end].location
+        let length = hypot(b.x - a.x, b.y - a.y)
+        for point in polyline[start..<end].dropFirst() {
+            let p = point.location
+            // A span that comes back to where it started has no chord.
+            let distance = length > 0
+                ? abs((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) / length
+                : hypot(p.x - a.x, p.y - a.y)
+            if distance > edgeChordError { return true }
+        }
+        return false
+    }
+
+    /// Appends to `path` the segments of `polyline[start..<end]` whose padded
+    /// box meets `rect` (all of them when nil); a skipped segment ends the
+    /// subpath and the next kept one starts a new one. False when nothing
+    /// was added. With a `stride`, only every `stride`-th point counted from
+    /// `start` and the last one are joined: a growing stroke keeps the same
+    /// points at its start as samples arrive, so the live line and the
+    /// committed one match.
     private static func addLines(_ polyline: [InkPoint], from start: Int, to end: Int, stride: Int = 1,
-                                 touching rect: CGRect?, in ctx: CGContext) -> Bool {
+                                 touching rect: CGRect?, to path: CGMutablePath) -> Bool {
         if end - start == 1 {
             let point = polyline[start]
             if let rect, !box(around: point).intersects(rect) { return false }
-            ctx.move(to: point.location)
-            ctx.addLine(to: point.location)
+            path.move(to: point.location)
+            path.addLine(to: point.location)
             return true
         }
         var added = false
@@ -102,10 +251,10 @@ nonisolated enum InkRenderer {
                 continue
             }
             if !subpathOpen {
-                ctx.move(to: from.location)
+                path.move(to: from.location)
                 subpathOpen = true
             }
-            ctx.addLine(to: to.location)
+            path.addLine(to: to.location)
             added = true
         }
         return added
@@ -162,6 +311,32 @@ nonisolated enum InkRenderer {
             drawn += 1
         }
         return drawn
+    }
+
+    /// The page's ink within `rect` (document coordinates) in the page's
+    /// layer order: the highlights, then the legacy strokes PencilKit
+    /// renders, then our writing. For a thumbnail, so nothing is cached;
+    /// the strokes outside `rect` are left out by the bounds tests in `draw`
+    /// and by PencilKit's own clip. Draws a UIImage, so it must run inside a
+    /// UIKit image renderer's block.
+    static func drawPage(_ drawing: PKDrawing, paper: PaperColor, rect: CGRect, in ctx: CGContext) {
+        var owned: [InkEntry] = []
+        var legacy: [PKStroke] = []
+        // `strokes` copies the whole list on every read.
+        for stroke in drawing.strokes {
+            if InkGeometry.ownership(of: stroke) == .owned {
+                let points = InkGeometry.polyline(of: stroke)
+                owned.append(InkEntry(stroke: stroke, bounds: InkGeometry.bounds(of: points, maskOf: stroke),
+                                      kept: nil, polyline: points))
+            } else {
+                legacy.append(stroke)
+            }
+        }
+        draw(owned, markers: true, paper: paper, rect: rect, in: ctx)
+        if !legacy.isEmpty {
+            underlayImage(strokes: legacy, bounds: rect, paper: paper, scale: 1)?.draw(in: rect)
+        }
+        draw(owned, markers: false, paper: paper, rect: rect, in: ctx)
     }
 
     /// PencilKit's rendering of a drawing (the legacy strokes), in the paper's

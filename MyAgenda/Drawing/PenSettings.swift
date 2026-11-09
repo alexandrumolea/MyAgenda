@@ -43,15 +43,6 @@ final class PenSettings {
             }
         }
 
-        var inkType: PKInkingTool.InkType {
-            switch self {
-            case .monoline: return .monoline
-            case .pen, .gel: return .pen
-            case .pencil: return .pencil
-            case .crayon: return .crayon
-            }
-        }
-
         /// Ball-pen profile for the ink surface; nil = uniform line.
         var ballpointTuning: BallpointTuning? {
             self == .gel ? .classic : nil
@@ -132,40 +123,11 @@ final class PenSettings {
     }
 
     static let palette: [Color] = [.black, .blue, .red, .green, .orange, .purple]
-    static let penWidths: [CGFloat] = [2, 4, 7, 12]
-    static let highlighterWidths: [CGFloat] = [12, 18, 26, 36]
-
-    /// Whether a width control applies right now (pen or highlighter active).
-    var hasWidthControl: Bool { tool == .pen || tool == .highlighter }
-
-    /// Widths to show for the active tool.
-    var widthOptions: [CGFloat] { tool == .highlighter ? Self.highlighterWidths : Self.penWidths }
 
     /// Width of the currently active inking tool.
     var activeWidth: CGFloat {
         get { tool == .highlighter ? highlighterWidth : width }
         set { if tool == .highlighter { highlighterWidth = newValue } else { width = newValue } }
-    }
-
-    var pkTool: PKTool {
-        switch tool {
-        case .pen:
-            // The writing pen uses the user-selected ink style.
-            return PKInkingTool(penInk.inkType, color: UIColor(penColor), width: width)
-        case .highlighter:
-            // `.marker` = translucent highlighter ink. PencilKit's marker
-            // stops short of the widths our slider reaches.
-            let range = PKInkingTool.InkType.marker.validWidthRange
-            return PKInkingTool(.marker, color: UIColor(highlighterColor),
-                                width: min(max(highlighterWidth, range.lowerBound), range.upperBound))
-        case .eraser:
-            let range = Self.eraserWidthRange
-            // Pixel eraser with exactly the chosen size, whatever the pressure.
-            return PKEraserTool(.fixedWidthBitmap,
-                                width: min(max(eraserWidth, range.lowerBound), range.upperBound))
-        case .lasso:
-            return PKLassoTool()
-        }
     }
 
     /// What the ink surface does with the Pencil for the active tool.

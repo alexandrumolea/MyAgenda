@@ -5,9 +5,10 @@
 //  The one geometry behind our own ink: a stroke becomes a polyline of
 //  (location, width) points by PencilKit's own B-spline evaluation, so the
 //  strokes already on disk keep their shape, and the width comes from the
-//  law the engine commits with. The live stroke builds the same PKStrokePath
-//  from the Pencil's samples, so what the renderer draws while writing and
-//  what it draws after the commit is, by construction, the same line.
+//  size each point stores (`width(for:inkType:)`). The live stroke builds
+//  the same PKStrokePath from the Pencil's samples, so what the renderer
+//  draws while writing and what it draws after the commit is, by
+//  construction, the same line.
 //
 
 import PencilKit
@@ -325,6 +326,42 @@ nonisolated enum InkGeometry {
     }
 }
 
+// MARK: - Ball-pen tuning
+
+/// Shape of the ball-pen ends and lift-off tail. Lengths are in points, the
+/// `…Widths` factors scale with the chosen pen width (the larger wins).
+struct BallpointTuning: Equatable {
+    var leadInMin: CGFloat
+    var leadInWidths: CGFloat
+    var leadInStart: CGFloat      // width factor at the very start
+
+    var runOutMin: CGFloat
+    var runOutWidths: CGFloat
+    var tipWidth: CGFloat         // width factor at the very end
+
+    var tailMinSpeed: CGFloat     // pt/s below which no tail is added
+    var tailGain: CGFloat         // tail length per pt/s above the minimum
+    var tailMaxBase: CGFloat
+    var tailMaxWidths: CGFloat
+    var tailMaxCap: CGFloat
+
+    /// "Gel 2": long, soft run-out and an eager tail.
+    static let current = BallpointTuning(
+        leadInMin: 4, leadInWidths: 1.6, leadInStart: 0.6,
+        runOutMin: 18, runOutWidths: 5, tipWidth: 0.15,
+        tailMinSpeed: 40, tailGain: 0.022, tailMaxBase: 8, tailMaxWidths: 2.5, tailMaxCap: 26
+    )
+
+    /// "Gel": short, firm ends. No run-out: the line keeps its full width
+    /// right to where the pencil lifts, so nothing changes on lift — a
+    /// run-out applied only at commit read as the stroke shrinking back.
+    static let classic = BallpointTuning(
+        leadInMin: 2, leadInWidths: 0.8, leadInStart: 0.7,
+        runOutMin: 8, runOutWidths: 2.5, tipWidth: 1,
+        tailMinSpeed: 80, tailGain: 0.015, tailMaxBase: 4, tailMaxWidths: 1.5, tailMaxCap: 16
+    )
+}
+
 // MARK: - Live stroke
 
 /// The stroke under the Pencil: collects samples and builds, at any moment,
@@ -356,7 +393,11 @@ final class LiveStroke {
         var arc: CGFloat = 0
     }
 
+    /// Samples closer than this to the last one are dropped.
+    static let minSpacing: CGFloat = 0.5
+
     private var samples: [Sample] = []
+    private var smoother = PathSmoother()
     private var smoothedWidth: CGFloat = 0
     /// Shared by every path built from this stroke, so the live and the
     /// committed path are the same path.
@@ -394,7 +435,7 @@ final class LiveStroke {
             let force = t.maximumPossibleForce > 0 ? t.force / t.maximumPossibleForce : 1
             // Keep more points for rounder, more faithful curves.
             if !isFirst, let last = samples.last,
-               hypot(loc.x - last.location.x, loc.y - last.location.y) < 0.5 {
+               hypot(loc.x - last.location.x, loc.y - last.location.y) < Self.minSpacing {
                 continue
             }
             let width = computeWidth(location: loc, force: force, time: t.timestamp)
@@ -403,6 +444,8 @@ final class LiveStroke {
                 arc = last.arc + hypot(loc.x - last.location.x, loc.y - last.location.y)
             }
             samples.append(Sample(location: loc, width: width, force: force, time: t.timestamp, arc: arc))
+            // The highlighter keeps its raw path (see `path()`).
+            if inkType != .marker { smoother.append(loc, arc: arc) }
         }
         // No predicted touches: a prediction, however short, reshapes the
         // tip when the real sample replaces it, and the sub-frame lag is
@@ -420,14 +463,14 @@ final class LiveStroke {
         }
         // Gel pen: the line stays steady but visibly breathes. Thinner when
         // fast, bolder when slow (the ink pools) and when pressed — about
-        // ±30% overall, the same on the live line and the committed one.
-        let speedMul = 1.12 - tSpeed * (1.12 - 0.78)
-        let forceMul = 0.85 + 0.3 * force
+        // ±40% overall, the same on the live line and the committed one.
+        let speedMul = 1.18 - tSpeed * (1.18 - 0.70)
+        let forceMul = 0.78 + 0.44 * force
         let target = baseWidth * speedMul * forceMul
         // Smoothing keeps the width fluid; a touch quicker than before, so
         // the response to pressure shows within a letter.
         smoothedWidth = smoothedWidth <= 0 ? target : smoothedWidth * 0.75 + target * 0.25
-        return min(max(smoothedWidth, baseWidth * 0.65), baseWidth * 1.35)
+        return min(max(smoothedWidth, baseWidth * 0.55), baseWidth * 1.45)
     }
 
     // MARK: Path
@@ -437,15 +480,17 @@ final class LiveStroke {
     func path() -> PKStrokePath? {
         guard !samples.isEmpty else { return nil }
         let base = samples[0].time
-        // Raw points and raw widths, so the stroke is the hand's own shape —
-        // PencilKit's spline rounds it, nothing "corrects" it. The width is
-        // already in the size: full force and opacity on every point, so
-        // PencilKit has nothing of its own to thin or fade with.
-        var points: [PKStrokePoint] = samples.map { s in
+        // Raw widths, and for the pen the tremor smoothed out of the points
+        // (`PathSmoother`: the start, the tip and the corners stay raw); the
+        // highlighter keeps its raw points. The width is already in the size:
+        // full force and opacity on every point, so PencilKit has nothing of
+        // its own to thin or fade with.
+        let locations = inkType == .marker ? nil : smoother.smoothed()
+        var points: [PKStrokePoint] = samples.enumerated().map { i, s in
             let taper = tuning == nil ? 1 : ballpointStartTaper(arc: s.arc)
             let width = max(s.width * taper, 0.6)
             let size = inkType == .marker ? width : (width + 4) / 2
-            return PKStrokePoint(location: s.location,
+            return PKStrokePoint(location: locations?[i] ?? s.location,
                                  timeOffset: max(s.time - base, 0),
                                  size: CGSize(width: size, height: size),
                                  opacity: 1,

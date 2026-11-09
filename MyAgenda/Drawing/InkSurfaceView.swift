@@ -740,9 +740,9 @@ final class InkSurfaceView: UIView {
     }
 
     private func appendLiveStep(_ live: LiveStroke, _ touch: UITouch, event: UIEvent?) {
-        // A new sample reshapes only the last few B-spline spans (the pinned
-        // end moves): redraw where they were and where they are now. A span
-        // is four polyline points; six spans are plenty.
+        // A new sample moves only the points the smoother hasn't settled and
+        // the last few B-spline spans (the pinned end moves): redraw where
+        // they were and where they are now. A span is four polyline points.
         let before = InkGeometry.bounds(of: Array(livePolyline.suffix(Self.changedPoints)))
         live.append(touch, event: event, in: self)
         livePolyline = live.path().map {
@@ -771,7 +771,10 @@ final class InkSurfaceView: UIView {
     }
 
     /// Polyline points at the end of `livePolyline` the next sample can change.
-    private static let changedPoints = 6 * Int(1 / InkGeometry.step) + 1
+    /// The unsettled samples, two spans either side that each moved sample
+    /// bends, and six spans for the pinned end.
+    private static let changedPoints =
+        (Int(PathSmoother.horizon / LiveStroke.minSpacing) + 2 + 6) * Int(1 / InkGeometry.step) + 1
 
     /// `rect` grown outward to the live grid: whole points, so the live
     /// view's pixels sit on the tiles'.

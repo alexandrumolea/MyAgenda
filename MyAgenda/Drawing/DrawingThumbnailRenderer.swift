@@ -3,11 +3,13 @@
 //  MyAgenda
 //
 //  Renders a small page preview (photos, ink, text, checklists) in the page's
-//  own coordinate space, showing the top of the page. The cache key is a
-//  fingerprint of what is actually on the page, so a thumbnail is rendered once
-//  per version of the page: an edit always refreshes it, and an unchanged page
-//  never renders again, not even after a relaunch (thumbnails are also kept on
-//  disk, one per page).
+//  own coordinate space, showing the top of the page. The ink goes through
+//  the page's own renderer (`InkRenderer.drawPage`): highlights, then the
+//  legacy PencilKit strokes, then our writing, as on the page. The cache key
+//  is a fingerprint of what is actually on the page, so a thumbnail is
+//  rendered once per version of the page: an edit always refreshes it, and an
+//  unchanged page never renders again, not even after a relaunch (thumbnails
+//  are also kept on disk, one per page).
 //
 
 import SwiftUI
@@ -19,7 +21,7 @@ enum DrawingThumbnailRenderer {
     private nonisolated(unsafe) static let cache = NSCache<NSString, UIImage>()
 
     /// Bump when the drawing code changes, so old thumbnails are redone.
-    private static let renderVersion = 6
+    private static let renderVersion = 9
 
     /// Hash of each page's drawing, so megabytes of ink are only re-hashed
     /// after the page changes.
@@ -248,12 +250,12 @@ enum DrawingThumbnailRenderer {
                     draw(box, paper: paper, pageWidth: pageW, visibleHeight: visibleHeight, in: ctx.cgContext)
                 }
 
-                // Ink last, over text and checklists, as on the page.
-                if let drawing, !drawing.bounds.isNull,
-                   drawing.bounds.width > 0, drawing.bounds.height > 0 {
-                    let bounds = drawing.bounds
-                    let strokeImage = drawing.image(from: bounds, scale: 1)
-                    strokeImage.draw(in: bounds)
+                // Ink last, over text and checklists, as on the page, by the
+                // page's own renderer and in its layer order.
+                if let drawing {
+                    InkRenderer.drawPage(drawing, paper: paper,
+                                         rect: CGRect(x: 0, y: 0, width: pageW, height: visibleHeight),
+                                         in: ctx.cgContext)
                 }
 
                 ctx.cgContext.restoreGState()
