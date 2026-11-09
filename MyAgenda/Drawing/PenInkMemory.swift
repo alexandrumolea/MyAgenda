@@ -2,8 +2,8 @@
 //  PenInkMemory.swift
 //  MyAgenda
 //
-//  Each ink style of the writing pen (Uniform, Pix, Pix 2, Creion, Cretă)
-//  remembers its own color and width: switching ink stores the settings of
+//  Each ink style of the writing pen (Gel, Uniform) remembers its own color
+//  and width: switching ink stores the settings of
 //  the one you leave and restores those of the one you pick. The highlighter
 //  already keeps its own color and width in PenSettings.
 //

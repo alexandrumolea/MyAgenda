@@ -21,17 +21,23 @@ final class PenSettings {
     enum PenInk: String, CaseIterable, Identifiable {
         case monoline
         case pen
-        case pen2
+        /// Keeps the raw value of the old "Pix 2" slot, so the persisted
+        /// `pen.ink` and its `pen.ink.pen2.*` memory carry over as they are.
+        case gel = "pen2"
         case pencil
         case crayon
 
         var id: String { rawValue }
 
+        /// The inks the surface draws; the others stay only so an old
+        /// `pen.ink` value still decodes.
+        static let visible: [PenInk] = [.gel, .monoline]
+
         var label: String {
             switch self {
             case .monoline: return "Uniform"
             case .pen: return "Pix"
-            case .pen2: return "Pix 2"
+            case .gel: return "Gel"
             case .pencil: return "Creion"
             case .crayon: return "Cretă"
             }
@@ -40,24 +46,20 @@ final class PenSettings {
         var inkType: PKInkingTool.InkType {
             switch self {
             case .monoline: return .monoline
-            case .pen, .pen2: return .pen
+            case .pen, .gel: return .pen
             case .pencil: return .pencil
             case .crayon: return .crayon
             }
         }
 
-        /// Ball-pen profile for the custom engine; nil = fountain-pen profile.
+        /// Ball-pen profile for the ink surface; nil = uniform line.
         var ballpointTuning: BallpointTuning? {
-            switch self {
-            case .pen: return .current
-            case .pen2: return .classic
-            default: return nil
-            }
+            self == .gel ? .classic : nil
         }
     }
 
     var tool: ToolKind = .pen
-    var penInk: PenInk = .pen { didSet { persist() } }
+    var penInk: PenInk = .gel { didSet { persist() } }
     // Each tool keeps its own color.
     var penColor: Color = .black { didSet { persist() } }
     var highlighterColor: Color = .yellow { didSet { persist() } }
@@ -95,7 +97,13 @@ final class PenSettings {
         if d.object(forKey: Keys.highlighterWidth) != nil {
             highlighterWidth = CGFloat(d.double(forKey: Keys.highlighterWidth))
         }
-        if let inkRaw = d.string(forKey: Keys.ink), let ink = PenInk(rawValue: inkRaw) { penInk = ink }
+        // An ink no longer offered falls back to the gel pen.
+        if let inkRaw = d.string(forKey: Keys.ink), let ink = PenInk(rawValue: inkRaw),
+           PenInk.visible.contains(ink) {
+            penInk = ink
+        } else {
+            penInk = .gel
+        }
         // Until chosen, the eraser keeps the size it had before (3× the pen).
         eraserWidth = d.object(forKey: Keys.eraserWidth) != nil
             ? CGFloat(d.double(forKey: Keys.eraserWidth))
@@ -154,6 +162,21 @@ final class PenSettings {
                                 width: min(max(eraserWidth, range.lowerBound), range.upperBound))
         case .lasso:
             return PKLassoTool()
+        }
+    }
+
+    /// What the ink surface does with the Pencil for the active tool.
+    var surfaceMode: InkSurfaceView.Mode {
+        switch tool {
+        case .pen:
+            let profile: LiveStroke.Profile = penInk.ballpointTuning.map { .gel($0) } ?? .uniform
+            return .pen(profile, color: UIColor(penColor), width: width)
+        case .highlighter:
+            return .highlighter(color: UIColor(highlighterColor), width: highlighterWidth)
+        case .eraser:
+            return .eraser(width: eraserWidth)
+        case .lasso:
+            return .lasso
         }
     }
 

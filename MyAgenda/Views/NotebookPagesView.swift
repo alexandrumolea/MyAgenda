@@ -662,7 +662,7 @@ struct NotebookPagesView: View {
                     }
             )
             // A finger tap on the page closes the tags sidebar (Pencil still
-            // draws — the canvas consumes Pencil touches).
+            // draws — the ink recognizer consumes Pencil touches).
             .simultaneousGesture(
                 TapGesture().onEnded {
                     if showTagsSidebar {
@@ -715,8 +715,10 @@ struct NotebookPagesView: View {
 
                 ScrollView([.vertical, .horizontal], showsIndicators: true) {
                     // New text reads at ~17pt on screen despite the scaled-down page.
+                    // The ink bitmap follows the fit scale, not the zoom.
                     pageLayers(for: page, pageSize: pageSize,
-                               textSize: min(max(17 / fitScale, 18), 48), displayScale: scale)
+                               textSize: min(max(17 / fitScale, 18), 48), displayScale: scale,
+                               renderScale: fitScale)
                         .frame(width: logicalW, height: logicalH, alignment: .topLeading)
                         .scaleEffect(scale, anchor: .topLeading)
                         .frame(width: logicalW * scale, height: logicalH * scale, alignment: .topLeading)
@@ -780,22 +782,11 @@ struct NotebookPagesView: View {
 
     @ViewBuilder
     private func pageLayers(for page: JournalPage, pageSize: CGSize,
-                            textSize: CGFloat = 18, displayScale: CGFloat = 1) -> some View {
+                            textSize: CGFloat = 18, displayScale: CGFloat = 1,
+                            renderScale: CGFloat = 1) -> some View {
         let paper = paper(of: page)
         ZStack(alignment: .topLeading) {
             PaperBackground(style: notebook.pageStyle, paper: paper)
-
-            // Custom variable-width pen engine (GoodNotes-like). Active only for
-            // the pen tool; other tools use PencilKit directly. Off on iPhone.
-            InkOverlay(
-                isActive: !isPhone && pen.tool == .pen,
-                color: UIColor(pen.penColor),
-                previewColor: paper.shown(UIColor(pen.penColor)),
-                baseWidth: pen.width,
-                inkType: pen.penInk.inkType,
-                ballpoint: pen.penInk.ballpointTuning,
-                proxy: proxy
-            )
 
             // iPhone (no Pencil): double tap the empty page to start writing
             // right there, as on iPad; a single tap lets go of a selected
@@ -917,16 +908,18 @@ struct NotebookPagesView: View {
             }
 
             // Ink on top of everything, the selected photo included: on iPad the
-            // Pencil writes over text, checklists and photos. The canvas lets
+            // Pencil writes over text, checklists and photos. The surface lets
             // every touch through, so the finger still reaches the boxes.
-            PageCanvasView(
+            InkSurface(
                 page: page,
-                tool: pen.pkTool,
-                toolKind: pen.tool,
                 proxy: proxy,
                 isActive: page.id == selection,
                 paper: paper,
+                accent: UIColor(notebook.accentColor),
                 isPencilDevice: !isPhone,
+                isResident: isNear(page),
+                renderScale: renderScale,
+                mode: pen.surfaceMode,
                 onSqueeze: { pen.toggleEraser() },
                 onDoubleTap: { pen.toggleLasso() },
                 onInkBegan: endEditingForInk
@@ -960,6 +953,16 @@ struct NotebookPagesView: View {
     }
 
     private var selectedPaper: PaperColor { selectedPage.map(paper(of:)) ?? notebook.paper }
+
+    /// The selected page and its two neighbours keep their ink bitmaps: the
+    /// incoming page is on screen during a swipe, before `selection` changes.
+    /// Bounds the ink's memory however long the notebook gets (≤ 3 committed
+    /// + ≤ 3 underlays + 1 live bitmap, about 150 MB at worst).
+    private func isNear(_ page: JournalPage) -> Bool {
+        guard let selected = pages.firstIndex(where: { $0.id == selection }),
+              let index = pages.firstIndex(where: { $0.id == page.id }) else { return false }
+        return abs(index - selected) <= 1
+    }
 
     /// The page's own paper, else this notebook's.
     private func paper(of page: JournalPage) -> PaperColor {
@@ -1065,6 +1068,9 @@ struct NotebookPagesView: View {
     /// PencilKit also puts a picture of it on the clipboard, which is used only
     /// when there is no ink.
     private func pasteImage(at point: CGPoint, on page: JournalPage, pageSize: CGSize) {
+        // A finger that held the lasso's selection and moved it ends this
+        // press too.
+        if proxy.surface?.recentlyMovedSelection == true { return }
         let pasteboard = UIPasteboard.general
         if let data = pasteboard.data(forPasteboardType: PKAppleDrawingTypeIdentifier as String),
            let drawing = try? PKDrawing(data: data), !drawing.strokes.isEmpty {
@@ -1202,19 +1208,19 @@ struct NotebookPagesView: View {
         for box in checklistBoxes(of: page) {
             bottom = max(bottom, CGFloat(box.y) * width + CGFloat(box.items.count) * row + 24)
         }
-        if let ink = proxy.canvas?.drawing.bounds, !ink.isNull {
+        if let ink = proxy.document?.drawing.bounds, !ink.isNull {
             bottom = max(bottom, ink.maxY)
         }
         return CGPoint(x: width * 0.05, y: bottom + 12)
     }
 
     private func addTextBoxOnFreeSpot() {
-        guard let page = selectedPage, let size = proxy.canvas?.bounds.size else { return }
+        guard let page = selectedPage, let size = proxy.surface?.bounds.size else { return }
         addTextBox(at: freeSpot(on: page, pageSize: size), on: page, pageSize: size)
     }
 
     private func addChecklistOnFreeSpot() {
-        guard let page = selectedPage, let size = proxy.canvas?.bounds.size else { return }
+        guard let page = selectedPage, let size = proxy.surface?.bounds.size else { return }
         addChecklist(at: freeSpot(on: page, pageSize: size), on: page, pageSize: size)
     }
 

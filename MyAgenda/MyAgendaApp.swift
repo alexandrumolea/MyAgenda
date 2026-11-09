@@ -16,6 +16,7 @@ struct MyAgendaApp: App {
     init() {
         UNUserNotificationCenter.current().delegate = TimerNotificationDelegate.shared
         SyncLog.start()
+        HitchLog.start()
 
         let schema = Schema([Notebook.self, JournalPage.self, TextBox.self, ImageBox.self, ChecklistBox.self])
         let configuration = ModelConfiguration(

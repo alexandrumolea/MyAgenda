@@ -168,7 +168,7 @@ struct InkOptionsView: View {
                         get: { pen.penInk },
                         set: { ink in withAnimation(.snappy(duration: 0.2)) { pen.selectInk(ink) } }
                     )) {
-                        ForEach(PenSettings.PenInk.allCases) { ink in
+                        ForEach(PenSettings.PenInk.visible) { ink in
                             Text(ink.label).tag(ink)
                         }
                     }

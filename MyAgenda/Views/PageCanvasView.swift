@@ -27,6 +27,10 @@ final class PencilCanvasView: PKCanvasView {
     /// touch, so a selection can be dragged and its menu opened.
     var takesTouches = false
 
+    /// The gel inks: the custom engine draws the Pencil's strokes, so
+    /// PencilKit's recognizer must not.
+    var yieldsPencil = false
+
     private let pencilAnywhere = PencilAnywhereDelegate()
     private weak var pencilKitHome: UIView?
 
@@ -89,9 +93,10 @@ private final class PencilAnywhereDelegate: NSObject, UIGestureRecognizerDelegat
     // UIKit asks `responds(to:)` and `forwardingTarget(for:)` from outside the
     // main actor's view, but only ever on the main thread.
     nonisolated(unsafe) weak var pencilKit: UIGestureRecognizerDelegate?
-    weak var canvas: UIView?
+    weak var canvas: PencilCanvasView?
 
     func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        if touch.type == .pencil, canvas?.yieldsPencil == true { return false }
         if pencilKit?.gestureRecognizer?(recognizer, shouldReceive: touch) ?? true { return true }
         // A touch on the canvas itself stays PencilKit's call.
         guard let canvas, touch.view?.isDescendant(of: canvas) != true else { return false }
@@ -123,6 +128,8 @@ struct PageCanvasView: UIViewRepresentable {
     var onDoubleTap: () -> Void = {}
     /// Any tool starts on the canvas (pen, highlighter, eraser, lasso).
     var onInkBegan: () -> Void = {}
+    /// The pen's ink is drawn by the custom engine, not by PencilKit.
+    var usesEngine = false
 
     // Pencil-only everywhere: on iPhone (no Pencil) this makes the page
     // view-only for drawing; the finger scrolls instead.
@@ -182,6 +189,7 @@ struct PageCanvasView: UIViewRepresentable {
         guard let canvas = canvas as? PencilCanvasView else { return }
         canvas.takesTouches = isPencilDevice && toolKind == .lasso
         canvas.reachesOverBoxes = isPencilDevice && toolKind != .lasso
+        canvas.yieldsPencil = isPencilDevice && toolKind == .pen && usesEngine
     }
 
     final class Coordinator: NSObject, PKCanvasViewDelegate, UIPencilInteractionDelegate {
@@ -242,6 +250,11 @@ struct PageCanvasView: UIViewRepresentable {
 
         func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
             onInkBegan()
+        }
+
+        func canvasViewDidFinishRendering(_ canvasView: PKCanvasView) {
+            guard canvasView === proxy.canvas else { return }
+            proxy.onFinishRendering?()
         }
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
