@@ -2,7 +2,7 @@
 
 SwiftUI notebook app for iPad (Apple Pencil) and iPhone. iOS 26.5, SwiftData + CloudKit,
 PencilKit. `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, Swift 5 language mode.
-The owner (Alex) writes in Romanian; every user-facing string and every reply to him is in Romanian.
+The owner (Alex) writes in Romanian. Replies to him, commit messages and `docs/` stay in Romanian; the app's user-facing strings are in English.
 Goal, in his words: „o aplicație cât mai utilă și minimalistă”.
 
 ## How we work

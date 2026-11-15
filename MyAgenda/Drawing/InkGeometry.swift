@@ -328,38 +328,16 @@ nonisolated enum InkGeometry {
 
 // MARK: - Ball-pen tuning
 
-/// Shape of the ball-pen ends and lift-off tail. Lengths are in points, the
-/// `…Widths` factors scale with the chosen pen width (the larger wins).
+/// Shape of the ball-pen lead-in. Lengths are in points, the `…Widths`
+/// factors scale with the chosen pen width (the larger wins).
 struct BallpointTuning: Equatable {
     var leadInMin: CGFloat
     var leadInWidths: CGFloat
     var leadInStart: CGFloat      // width factor at the very start
 
-    var runOutMin: CGFloat
-    var runOutWidths: CGFloat
-    var tipWidth: CGFloat         // width factor at the very end
-
-    var tailMinSpeed: CGFloat     // pt/s below which no tail is added
-    var tailGain: CGFloat         // tail length per pt/s above the minimum
-    var tailMaxBase: CGFloat
-    var tailMaxWidths: CGFloat
-    var tailMaxCap: CGFloat
-
-    /// "Gel 2": long, soft run-out and an eager tail.
-    static let current = BallpointTuning(
-        leadInMin: 4, leadInWidths: 1.6, leadInStart: 0.6,
-        runOutMin: 18, runOutWidths: 5, tipWidth: 0.15,
-        tailMinSpeed: 40, tailGain: 0.022, tailMaxBase: 8, tailMaxWidths: 2.5, tailMaxCap: 26
-    )
-
-    /// "Gel": short, firm ends. No run-out: the line keeps its full width
-    /// right to where the pencil lifts, so nothing changes on lift — a
-    /// run-out applied only at commit read as the stroke shrinking back.
-    static let classic = BallpointTuning(
-        leadInMin: 2, leadInWidths: 0.8, leadInStart: 0.7,
-        runOutMin: 8, runOutWidths: 2.5, tipWidth: 1,
-        tailMinSpeed: 80, tailGain: 0.015, tailMaxBase: 4, tailMaxWidths: 1.5, tailMaxCap: 16
-    )
+    /// "Gel": short, firm start. The line keeps its full width right to
+    /// where the pencil lifts, so nothing changes on lift.
+    static let classic = BallpointTuning(leadInMin: 2, leadInWidths: 0.8, leadInStart: 0.7)
 }
 
 // MARK: - Live stroke

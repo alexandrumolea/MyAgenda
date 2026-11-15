@@ -17,4 +17,4 @@ For the request you are given:
 4. Write acceptance criteria as concrete, checkable statements (device, action, expected result). Cover iPad and iPhone, light, yellow and dark paper where relevant, and anything that must not change.
 5. List what is out of scope.
 
-Reply in English, concise, under 400 words. User-facing strings you propose are in Romanian.
+Reply in English, concise, under 400 words. User-facing strings you propose are in English.

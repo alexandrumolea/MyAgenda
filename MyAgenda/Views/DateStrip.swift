@@ -58,8 +58,8 @@ struct DateStrip: View {
         let isToday = calendar.isDateInToday(day)
         let isFirstOfMonth = calendar.component(.day, from: day) == 1
         let top = isFirstOfMonth
-            ? day.formatted(.dateTime.month(.abbreviated))
-            : day.formatted(.dateTime.weekday(.narrow))
+            ? day.formatted(.dateTime.month(.abbreviated).locale(.app))
+            : day.formatted(.dateTime.weekday(.narrow).locale(.app))
 
         return VStack(spacing: 1) {
             Text(top)

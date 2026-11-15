@@ -28,7 +28,7 @@ struct TagsSidebar: View {
 
         VStack(spacing: 0) {
             HStack {
-                Text("Etichete").font(.headline)
+                Text("Tags").font(.headline)
                 Spacer()
                 Button { onClose() } label: {
                     Image(systemName: "sidebar.leading").font(.system(size: 16))
@@ -43,7 +43,7 @@ struct TagsSidebar: View {
 
             List {
                 if !favorites.isEmpty {
-                    Section("Cuprins") {
+                    Section("Contents") {
                         ForEach(favorites) { p in
                             Button {
                                 onJump(p.id)
@@ -66,9 +66,9 @@ struct TagsSidebar: View {
                 }
 
                 if let page {
-                    Section("Pagina curentă") {
+                    Section("Current Page") {
                         if page.tags.isEmpty {
-                            Text("Nicio etichetă").foregroundStyle(.secondary).font(.subheadline)
+                            Text("No tags").foregroundStyle(.secondary).font(.subheadline)
                         }
                         ForEach(page.tags, id: \.self) { tag in
                             HStack {
@@ -82,7 +82,7 @@ struct TagsSidebar: View {
                         }
 
                         HStack {
-                            TextField("Etichetă nouă", text: $newTag)
+                            TextField("New Tag", text: $newTag)
                                 .textInputAutocapitalization(.never)
                                 .onSubmit { add(newTag, to: page) }
                             Button { add(newTag, to: page) } label: {
@@ -111,16 +111,16 @@ struct TagsSidebar: View {
                     }
                 }
 
-                Section("Toate etichetele") {
+                Section("All Tags") {
                     if entries.isEmpty {
-                        Text("Nicio etichetă în notebook").foregroundStyle(.secondary).font(.subheadline)
+                        Text("No tags in this notebook").foregroundStyle(.secondary).font(.subheadline)
                     }
                     ForEach(entries, id: \.tag) { entry in
                         DisclosureGroup {
                             ForEach(entry.pages) { p in
                                 Button { onJump(p.id) } label: {
                                     HStack {
-                                        Text(p.day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)).capitalized)
+                                        Text(p.day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated).locale(.app)))
                                             .font(.subheadline)
                                             .foregroundStyle(.primary)
                                         Spacer()
@@ -153,7 +153,7 @@ struct TagsSidebar: View {
     private func favoriteLabel(_ p: JournalPage) -> String {
         let name = p.title.trimmingCharacters(in: .whitespaces)
         if !name.isEmpty { return name }
-        return p.day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)).capitalized
+        return p.day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated).locale(.app))
     }
 
     private var tagIndex: [(tag: String, pages: [JournalPage])] {

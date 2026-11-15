@@ -719,6 +719,9 @@ final class InkSurfaceView: UIView {
         dropGesture()
     }
 
+    /// A Pencil gesture is on the page: a squeeze then must not open the bar.
+    var isStrokeUnderway: Bool { live != nil || erasing != nil || loopPath != nil || drag != nil }
+
     private func dropGesture() {
         clearLive()
         erasing = nil
@@ -1456,10 +1459,10 @@ extension InkSurfaceView: UIEditMenuInteractionDelegate {
     func editMenuInteraction(_ interaction: UIEditMenuInteraction, menuFor configuration: UIEditMenuConfiguration,
                              suggestedActions: [UIMenuElement]) -> UIMenu? {
         UIMenu(children: [
-            UIAction(title: "Taie") { [weak self] _ in self?.cutSelection() },
-            UIAction(title: "Copiază") { [weak self] _ in self?.copySelection() },
-            UIAction(title: "Duplică") { [weak self] _ in self?.duplicateSelection() },
-            UIAction(title: "Șterge") { [weak self] _ in self?.deleteSelection() },
+            UIAction(title: "Cut") { [weak self] _ in self?.cutSelection() },
+            UIAction(title: "Copy") { [weak self] _ in self?.copySelection() },
+            UIAction(title: "Duplicate") { [weak self] _ in self?.duplicateSelection() },
+            UIAction(title: "Delete") { [weak self] _ in self?.deleteSelection() },
         ])
     }
 
@@ -1500,10 +1503,12 @@ struct InkSurface: UIViewRepresentable {
     var isResident: Bool
     var renderScale: CGFloat = 1
     var mode: InkSurfaceView.Mode
-    /// Apple Pencil Pro squeeze.
-    var onSqueeze: () -> Void = {}
-    /// Apple Pencil double-tap.
-    var onDoubleTap: () -> Void = {}
+    /// Apple Pencil Pro squeeze, with where the Pencil hovers (window
+    /// coordinates), if it does.
+    var onSqueeze: (CGPoint?) -> Void = { _ in }
+    /// Apple Pencil double-tap, with where the Pencil hovers (window
+    /// coordinates), if it does.
+    var onDoubleTap: (CGPoint?) -> Void = { _ in }
     /// Any tool starts on the page (pen, highlighter, eraser).
     var onInkBegan: () -> Void = {}
 
@@ -1556,9 +1561,11 @@ struct InkSurface: UIViewRepresentable {
     final class Coordinator: NSObject, UIPencilInteractionDelegate {
         let page: JournalPage
         let proxy: CanvasProxy
-        var onSqueeze: () -> Void
-        var onDoubleTap: () -> Void
+        var onSqueeze: (CGPoint?) -> Void
+        var onDoubleTap: (CGPoint?) -> Void
         weak var surface: InkSurfaceView?
+        /// The squeeze began mid-stroke: its end does nothing.
+        private var squeezeDuringStroke = false
         var lastAppliedDrawingData = Data()
         private var saveTask: Task<Void, Never>?
         /// Ink changed since the last store: a flush with nothing pending
@@ -1568,8 +1575,8 @@ struct InkSurface: UIViewRepresentable {
 
         init(page: JournalPage,
              proxy: CanvasProxy,
-             onSqueeze: @escaping () -> Void,
-             onDoubleTap: @escaping () -> Void) {
+             onSqueeze: @escaping (CGPoint?) -> Void,
+             onDoubleTap: @escaping (CGPoint?) -> Void) {
             self.page = page
             self.proxy = proxy
             self.onSqueeze = onSqueeze
@@ -1599,14 +1606,29 @@ struct InkSurface: UIViewRepresentable {
 
         func pencilInteraction(_ interaction: UIPencilInteraction,
                                didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
-            if squeeze.phase == .ended {
-                Task { @MainActor in self.onSqueeze() }
+            // Pages the pager keeps loaded get the squeeze too.
+            guard let surface, surface.isActive else { return }
+            switch squeeze.phase {
+            case .began:
+                squeezeDuringStroke = surface.isStrokeUnderway
+            case .ended:
+                defer { squeezeDuringStroke = false }
+                guard !squeezeDuringStroke, !surface.isStrokeUnderway else { return }
+                let point = squeeze.hoverPose.map { surface.convert($0.location, to: nil) }
+                // Now, not deferred: a touch in between may have closed the bar.
+                onSqueeze(point)
+            case .cancelled:
+                squeezeDuringStroke = false
+            default:
+                break
             }
         }
 
         func pencilInteraction(_ interaction: UIPencilInteraction,
                                didReceiveTap tap: UIPencilInteraction.Tap) {
-            Task { @MainActor in self.onDoubleTap() }
+            // Pages the pager keeps loaded get the tap too; mid-stroke it does nothing.
+            guard let surface, surface.isActive, !surface.isStrokeUnderway else { return }
+            onDoubleTap(tap.hoverPose.map { surface.convert($0.location, to: nil) })
         }
 
         // MARK: Save

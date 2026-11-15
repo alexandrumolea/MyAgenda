@@ -99,7 +99,7 @@ struct ChecklistBoxContainer: View {
                 row(item)
             }
             if !isEditing && displayItems.isEmpty {
-                Text("Checklist gol").font(.system(size: fontSize)).foregroundStyle(.secondary)
+                Text("Empty checklist").font(.system(size: fontSize)).foregroundStyle(.secondary)
             }
         }
     }

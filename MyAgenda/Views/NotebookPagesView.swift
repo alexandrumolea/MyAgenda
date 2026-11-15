@@ -21,6 +21,7 @@ struct NotebookPagesView: View {
     var onNewNotebook: () -> Void
     var onEditNotebook: () -> Void
     var onShowTimer: () -> Void
+    var onShowTour: () -> Void
 
     @Environment(\.modelContext) private var context
     @Environment(\.scenePhase) private var scenePhase
@@ -47,6 +48,11 @@ struct NotebookPagesView: View {
     @AppStorage("topBarHidden") private var topBarHidden = false
     /// The bottom pen toolbar, hidden by swiping it off to the right or from the menu.
     @AppStorage("penToolbarHidden") private var toolbarHidden = false
+    /// iPad: hidden from the menu, the toolbar leaves no handle behind (a
+    /// swipe still docks it into one). This device only.
+    @AppStorage("penToolbarHandleless") private var toolbarHandleless = false
+    /// iPad: what the Pencil's double-tap does. This device only.
+    @AppStorage("pencilDoubleTapAction") private var doubleTapAction: PenSettings.DoubleTapAction = .lasso
     /// Tiny clock in the top-left corner, only in minimal mode (the status bar
     /// clock is gone then). Floats over the page and takes no space.
     @AppStorage("showsMiniClock") private var showsMiniClock = false
@@ -63,9 +69,12 @@ struct NotebookPagesView: View {
     @State private var dockRegions = DockHitRegions()
     /// iPad: holding the pen toolbar moves it to another edge.
     @State private var toolbarMove = ToolbarMove()
+    /// iPad: the tools bar the Pencil Pro's squeeze opens by the tip.
+    @State private var squeezeBar = SqueezeBarState()
     /// Live safe-area insets of the screen. The page itself always runs edge
     /// to edge; only the floating controls use these.
-    @State private var safeTop: CGFloat = 0
+    @State private var safeInsets = EdgeInsets()
+    private var safeTop: CGFloat { safeInsets.top }
     /// `safeTop` as of the last time the status bar was shown; minimal mode
     /// hides it and its inset with it.
     @State private var statusBarTop: CGFloat = 0
@@ -119,13 +128,15 @@ struct NotebookPagesView: View {
          selectedNotebookID: Binding<UUID?>,
          onNewNotebook: @escaping () -> Void,
          onEditNotebook: @escaping () -> Void,
-         onShowTimer: @escaping () -> Void) {
+         onShowTimer: @escaping () -> Void,
+         onShowTour: @escaping () -> Void) {
         self.notebook = notebook
         self.notebooks = notebooks
         self._selectedNotebookID = selectedNotebookID
         self.onNewNotebook = onNewNotebook
         self.onEditNotebook = onEditNotebook
         self.onShowTimer = onShowTimer
+        self.onShowTour = onShowTour
         let nbID = notebook.id
         _pages = Query(
             filter: #Predicate<JournalPage> { $0.notebookID == nbID },
@@ -215,9 +226,11 @@ struct NotebookPagesView: View {
         // left alone: hiding it (persistentSystemOverlays) makes UIKit defer
         // every touch near the screen edges ("System gesture gate timed out").
         .statusBarHidden(topBarHidden)
-        .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.top } action: { top in
-            safeTop = top
-            if !topBarHidden { statusBarTop = top }
+        .onGeometryChange(for: EdgeInsets.self) { $0.safeAreaInsets } action: { insets in
+            // Only a change of the top one, as when this read the top alone.
+            let topChanged = insets.top != safeInsets.top
+            safeInsets = insets
+            if topChanged, !topBarHidden { statusBarTop = insets.top }
         }
         .animation(.snappy(duration: 0.28), value: showTagsSidebar)
         // Dark paper turns the whole app dark (bars, menus, status bar), so it
@@ -247,6 +260,7 @@ struct NotebookPagesView: View {
         // would never reach iCloud (and could be lost).
         .onChange(of: scenePhase) { _, phase in
             guard phase != .active else { return }
+            squeezeBar.close()
             proxy.flushPendingSave?()
             try? context.save()
         }
@@ -255,6 +269,7 @@ struct NotebookPagesView: View {
             // consider pruning it — otherwise a just-drawn page can look empty
             // (debounced save not yet flushed) and get deleted.
             proxy.flushPendingSave?()
+            squeezeBar.close()
             phoneZoom = 1
             selectedImageID = nil
             croppingImage = false
@@ -323,16 +338,16 @@ struct NotebookPagesView: View {
                 await MainActor.run { pickedPhoto = nil }
             }
         }
-        .alert("Nume pagină", isPresented: $showRename) {
-            TextField("Nume", text: $renameText)
-            Button("Salvează") {
+        .alert("Page Name", isPresented: $showRename) {
+            TextField("Name", text: $renameText)
+            Button("Save") {
                 selectedPage?.title = renameText.trimmingCharacters(in: .whitespaces)
                 selectedPage?.updatedAt = .now
                 try? context.save()
             }
-            Button("Anulează", role: .cancel) {}
+            Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Dă un nume paginii pentru cuprins.")
+            Text("Give this page a name for Contents.")
         }
     }
 
@@ -364,7 +379,7 @@ struct NotebookPagesView: View {
             HStack(spacing: 14) {
                 if !hideNotebookPill {
                     HStack(spacing: 2) {
-                        barButton("tag", active: showTagsSidebar) {
+                        barButton("tag", label: "Tags", active: showTagsSidebar) {
                             withAnimation(.snappy(duration: 0.28)) { showTagsSidebar.toggle() }
                         }
                         notebookMenu
@@ -398,7 +413,7 @@ struct NotebookPagesView: View {
                 }
 
                 if !hideNavPill {
-                    barButton("square.grid.2x2") {
+                    barButton("square.grid.2x2", label: "All Pages") {
                         openOverview()
                     }
                     .padding(2)
@@ -472,7 +487,7 @@ struct NotebookPagesView: View {
         }
     }
 
-    private func barButton(_ system: String, active: Bool = false,
+    private func barButton(_ system: String, label: String, active: Bool = false,
                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: system)
@@ -482,6 +497,8 @@ struct NotebookPagesView: View {
                 .contentShape(.circle)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(active ? .isSelected : [])
     }
 
     private var notebookMenu: some View {
@@ -516,8 +533,8 @@ struct NotebookPagesView: View {
         .pickerStyle(.inline)
 
         Divider()
-        Button { onNewNotebook() } label: { Label("Notebook nou", systemImage: "plus") }
-        Button { onEditNotebook() } label: { Label("Editează „\(notebook.title)”", systemImage: "pencil") }
+        Button { onNewNotebook() } label: { Label("New Notebook", systemImage: "plus") }
+        Button { onEditNotebook() } label: { Label("Edit “\(notebook.title)”", systemImage: "pencil") }
     }
 
     // MARK: - "…" menu
@@ -542,23 +559,35 @@ struct NotebookPagesView: View {
         }
 
         var view: [UIMenuElement] = [
-            action(topBarHidden ? "Arată bara" : "Ascunde bara",
+            action(topBarHidden ? "Show Bar" : "Hide Bar",
                    topBarHidden ? "arrow.down.to.line.compact" : "arrow.up.to.line.compact") {
                 setTopBar(hidden: !topBarHidden)
             },
-            action(toolbarHidden ? "Arată instrumentele" : "Ascunde instrumentele",
+            action(toolbarHidden ? "Show Tools" : "Hide Tools",
                    toolbarHidden ? "pencil.and.outline" : "pencil.slash") {
-                toolbarHidden.toggle()
+                if toolbarHidden {
+                    toolbarHidden = false
+                } else {
+                    toolbarHandleless = !isPhone
+                    toolbarHidden = true
+                }
             }
         ]
+        if !isPhone {
+            let choices = PenSettings.DoubleTapAction.allCases.map { choice in
+                action(choice.label, choice.symbol, on: choice == doubleTapAction) { doubleTapAction = choice }
+            }
+            view.append(UIMenu(title: "Pencil Double-Tap", subtitle: doubleTapAction.label,
+                               image: UIImage(systemName: "applepencil.doubletap"), children: choices))
+        }
         if topBarHidden {
-            view.append(action("Ceas mic", "clock", on: showsMiniClock) { showsMiniClock.toggle() })
+            view.append(action("Small Clock", "clock", on: showsMiniClock) { showsMiniClock.toggle() })
         }
         var sections: [UIMenuElement] = []
         // Off today's pages: one tap back to today, as in the day strip.
         if selectedPage.map({ Calendar.current.isDateInToday($0.day) }) != true {
             sections.append(UIMenu(options: .displayInline, children: [
-                action("Azi", "sun.max") {
+                action("Today", "sun.max") {
                     goToDay(Calendar.current.startOfDay(for: .now))
                     calendarReveal.settle(open: false)
                 }
@@ -574,38 +603,60 @@ struct NotebookPagesView: View {
             let notebookMenu = UIMenu(title: notebook.title, image: UIImage(systemName: "book.closed.fill"),
                                       children: [
                 UIMenu(options: .displayInline, children: notebookChoices),
-                action("Notebook nou", "plus") { onNewNotebook() },
-                action("Editează „\(notebook.title)”", "pencil") { onEditNotebook() }
+                action("New Notebook", "plus") { onNewNotebook() },
+                action("Edit “\(notebook.title)”", "pencil") { onEditNotebook() }
             ])
             sections.append(UIMenu(options: .displayInline, children: [
                 notebookMenu,
-                action("Pagină nouă", "plus") { addPage() },
+                action("New Page", "plus") { addPage() },
                 action("Calendar", "calendar") { calendarReveal.settle(open: true) },
-                action("Toate paginile", "square.grid.2x2") {
+                action("All Pages", "square.grid.2x2") {
                     openOverview()
                 },
-                action(showTagsSidebar ? "Ascunde etichetele" : "Etichete", "tag") {
+                action(showTagsSidebar ? "Hide Tags" : "Tags", "tag") {
                     withAnimation(.snappy(duration: 0.28)) { showTagsSidebar.toggle() }
                 }
             ]))
         }
 
+        // iPad, tools hidden with no handle: the toolbar's actions move in here.
+        // New Page is already above while the bar is hidden.
+        if toolbarHidden && toolbarHandleless && !isPhone && selectedPage != nil {
+            var tools: [UIMenuElement] = [
+                action("Undo", "arrow.uturn.backward") { proxy.undo() },
+                action("Redo", "arrow.uturn.forward") { proxy.redo() },
+                action("Add Text", "character.textbox") { addTextBoxOnFreeSpot() },
+                action("Add Checklist", "checklist") { addChecklistOnFreeSpot() },
+                action("Add Photo", "photo") { showPhotoPicker = true },
+                action("Timer", "timer") { onShowTimer() }
+            ]
+            if !topBarHidden {
+                tools.append(action("New Page", "plus.rectangle.on.rectangle") { addPage() })
+            }
+            sections.append(UIMenu(options: .displayInline, children: tools))
+        }
+
         if let page = selectedPage {
             sections.append(UIMenu(options: .displayInline, children: [
-                action(page.isFavorite ? "Scoate din favorite" : "Adaugă la favorite",
+                action(page.isFavorite ? "Remove from Favorites" : "Add to Favorites",
                        page.isFavorite ? "star.slash" : "star") {
                     page.isFavorite.toggle()
                     page.updatedAt = .now
                     try? context.save()
                 },
-                action("Redenumește pagina", "character.cursor.ibeam") {
+                action("Rename Page", "character.cursor.ibeam") {
                     renameText = page.title
                     showRename = true
                 },
                 paperMenu(for: page, action: action)
             ]))
+        }
+        sections.append(UIMenu(options: .displayInline, children: [
+            action("Welcome Tour", "info.circle") { onShowTour() }
+        ]))
+        if let page = selectedPage {
             sections.append(UIMenu(options: .displayInline, children: [
-                action("Șterge pagina", "trash", attributes: .destructive) { deletePage(page) }
+                action("Delete Page", "trash", attributes: .destructive) { deletePage(page) }
             ]))
         }
         return sections
@@ -615,7 +666,7 @@ struct NotebookPagesView: View {
     private func paperMenu(for page: JournalPage,
                            action: (String, String, UIMenuElement.Attributes, Bool,
                                     @escaping () -> Void) -> UIAction) -> UIMenu {
-        let pageChoices = [action("Ca tot caietul", "book.closed", [], page.paperRaw.isEmpty) {
+        let pageChoices = [action("Same as Notebook", "book.closed", [], page.paperRaw.isEmpty) {
             setPaper(nil, of: page)
         }] + PaperColor.allCases.map { paper in
             action(paper.label, paper.symbol, [], page.paperRaw == paper.rawValue) {
@@ -625,9 +676,9 @@ struct NotebookPagesView: View {
         let notebookChoices = PaperColor.allCases.map { paper in
             action(paper.label, paper.symbol, [], notebook.paper == paper) { setNotebookPaper(paper) }
         }
-        return UIMenu(title: "Hârtie", image: UIImage(systemName: paper(of: page).symbol), children: [
-            UIMenu(title: "Pagina aceasta", options: .displayInline, children: pageChoices),
-            UIMenu(title: "Tot caietul", options: .displayInline, children: notebookChoices)
+        return UIMenu(title: "Paper", image: UIImage(systemName: paper(of: page).symbol), children: [
+            UIMenu(title: "This Page", options: .displayInline, children: pageChoices),
+            UIMenu(title: "Whole Notebook", options: .displayInline, children: notebookChoices)
         ])
     }
 
@@ -636,9 +687,9 @@ struct NotebookPagesView: View {
     @ViewBuilder private var pageArea: some View {
         if pages.isEmpty {
             ContentUnavailableView(
-                "Nicio pagină încă",
+                "No Pages Yet",
                 systemImage: "book.closed",
-                description: Text("Apasă + ca să adaugi prima pagină.")
+                description: Text("Tap + to add the first page.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -687,18 +738,22 @@ struct NotebookPagesView: View {
     /// on the side it was moved to (iPad), and hidden while the editing bar is up.
     @ViewBuilder private var bottomToolbar: some View {
         if !pages.isEmpty {
-            ToolbarDock(regions: dockRegions, move: isPhone ? nil : toolbarMove) {
+            ToolbarDock(regions: dockRegions, move: isPhone ? nil : toolbarMove,
+                        squeeze: isPhone ? nil : squeezeBar) {
                 BottomToolbarLayer(
                     pen: pen, proxy: proxy, regions: dockRegions, isPhone: isPhone,
                     // While editing, the bar above the keyboard is the only one.
                     showsToolbar: editingTextBoxID == nil && editingChecklistID == nil,
                     toolbarHidden: $toolbarHidden,
+                    handleless: $toolbarHandleless,
                     leadingInset: panelInset,
                     move: isPhone ? nil : toolbarMove,
                     // Below the top row, with the status bar's inset even in
                     // minimal mode (where it is gone), so a side bar stays put
                     // when the mode toggles.
                     topReserve: max(statusBarTop, 32) + 8 + Self.barHeight + 12,
+                    squeezeBar: isPhone ? nil : squeezeBar,
+                    safeArea: safeInsets,
                     onAddText: addTextBoxOnFreeSpot,
                     onAddChecklist: addChecklistOnFreeSpot,
                     onAddPhoto: { showPhotoPicker = true },
@@ -935,8 +990,8 @@ struct NotebookPagesView: View {
                 isResident: isNear(page),
                 renderScale: renderScale,
                 mode: pen.surfaceMode,
-                onSqueeze: { pen.toggleEraser() },
-                onDoubleTap: { pen.toggleLasso() },
+                onSqueeze: toggleSqueezeBar,
+                onDoubleTap: handleDoubleTap,
                 onInkBegan: endEditingForInk
             )
             .zIndex(10)
@@ -1317,6 +1372,37 @@ struct NotebookPagesView: View {
         withAnimation(.snappy(duration: 0.2)) {
             editingChecklistID = nil
             editingTextBoxID = nil
+        }
+    }
+
+    /// Squeeze opens or closes the tools bar by the tip. Not while a box is
+    /// edited, the overview is up or anything is presented over the page.
+    private func toggleSqueezeBar(at point: CGPoint?) {
+        guard !isPhone, editingTextBoxID == nil, editingChecklistID == nil, !showOverview,
+              proxy.surface?.window?.rootViewController?.presentedViewController == nil else { return }
+        squeezeBar.toggle(at: point)
+    }
+
+    /// The double-tap runs the action picked in the "…" menu. Any but Nothing
+    /// closes an open squeeze bar first; Quick Tools opens it as squeeze does.
+    private func handleDoubleTap(at point: CGPoint?) {
+        guard !isPhone, doubleTapAction != .nothing else { return }
+        if doubleTapAction == .quickTools {
+            if squeezeBar.isOpen {
+                squeezeBar.close()
+            } else {
+                toggleSqueezeBar(at: point)
+            }
+            return
+        }
+        squeezeBar.close()
+        switch doubleTapAction {
+        case .lasso: pen.toggle(.lasso)
+        case .highlighter: pen.toggle(.highlighter)
+        case .eraser: pen.toggle(.eraser)
+        case .previousTool: pen.swapWithPreviousTool()
+        case .undo: proxy.undo()
+        case .quickTools, .nothing: break
         }
     }
 

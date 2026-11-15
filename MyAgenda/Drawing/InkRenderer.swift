@@ -318,7 +318,8 @@ nonisolated enum InkRenderer {
     /// renders, then our writing. For a thumbnail, so nothing is cached;
     /// the strokes outside `rect` are left out by the bounds tests in `draw`
     /// and by PencilKit's own clip. Draws a UIImage, so it must run inside a
-    /// UIKit image renderer's block.
+    /// UIKit image renderer's block. The legacy strokes are rasterized at the
+    /// context's own density, so they stay as crisp as our ink in thumbnails.
     static func drawPage(_ drawing: PKDrawing, paper: PaperColor, rect: CGRect, in ctx: CGContext) {
         var owned: [InkEntry] = []
         var legacy: [PKStroke] = []
@@ -334,7 +335,9 @@ nonisolated enum InkRenderer {
         }
         draw(owned, markers: true, paper: paper, rect: rect, in: ctx)
         if !legacy.isEmpty {
-            underlayImage(strokes: legacy, bounds: rect, paper: paper, scale: 1)?.draw(in: rect)
+            let t = ctx.userSpaceToDeviceSpaceTransform
+            let density = max(hypot(t.a, t.b), 0.01)
+            underlayImage(strokes: legacy, bounds: rect, paper: paper, scale: density)?.draw(in: rect)
         }
         draw(owned, markers: false, paper: paper, rect: rect, in: ctx)
     }

@@ -146,7 +146,7 @@ struct PagePullHint: View {
             .frame(width: 52, height: 52)
             .glassEffect(ready ? .regular.tint(.accentColor) : .regular, in: .circle)
             .overlay(alignment: .bottom) {
-                Text(ready ? "Eliberează" : "Pagină nouă")
+                Text(ready ? "Release" : "New Page")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .fixedSize()

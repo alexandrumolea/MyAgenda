@@ -38,32 +38,39 @@ struct PenToolbar: View {
         let layout = vertical ? AnyLayout(VStackLayout(spacing: 12)) : AnyLayout(HStackLayout(spacing: compact ? 6 : 12))
         layout {
             if showsDrawingTools {
-                inkToolButton(.pen, system: "applepencil.tip")
-                inkToolButton(.highlighter, system: "highlighter")
+                inkToolButton(.pen, system: "applepencil.tip", label: "Pen")
+                inkToolButton(.highlighter, system: "highlighter", label: "Highlighter")
                 eraserButton
-                toolButton(.lasso, system: "lasso")
+                toolButton(.lasso, system: "lasso", label: "Lasso")
             }
 
-            iconButton("character.textbox", action: onAddText)
-            iconButton("checklist", action: onAddChecklist)
-            iconButton("photo", action: onAddPhoto)
+            iconButton("character.textbox", label: "Add Text", action: onAddText)
+            iconButton("checklist", label: "Add Checklist", action: onAddChecklist)
+            iconButton("photo", label: "Add Photo", action: onAddPhoto)
 
             if showsDrawingTools {
                 divider
 
-                iconButton("arrow.uturn.backward") { proxy.undo() }
-                iconButton("arrow.uturn.forward") { proxy.redo() }
+                iconButton("arrow.uturn.backward", label: "Undo") { proxy.undo() }
+                iconButton("arrow.uturn.forward", label: "Redo") { proxy.redo() }
             }
 
             divider
 
-            iconButton("timer", action: onTimer)
-            iconButton("plus.rectangle.on.rectangle", action: onAddPage)
+            iconButton("timer", label: "Timer", action: onTimer)
+            iconButton("plus.rectangle.on.rectangle", label: "New Page", action: onAddPage)
         }
         .padding(.horizontal, vertical ? 9 : (compact ? 12 : 16))
         .padding(.vertical, vertical ? 16 : 9)
         // An open popover would point at where the button was.
         .onChange(of: edge) {
+            showInkOptions = false
+            showEraserOptions = false
+        }
+        // A tool changed from elsewhere (Pencil double-tap, squeeze bar): the
+        // open options belong to the old one, and kept on they reopened when
+        // the tool came back.
+        .onChange(of: pen.tool) {
             showInkOptions = false
             showEraserOptions = false
         }
@@ -93,7 +100,7 @@ struct PenToolbar: View {
 
     /// Pen / highlighter: selecting shows a color dot; tapping again opens the
     /// color + width options popover.
-    private func inkToolButton(_ kind: PenSettings.ToolKind, system: String) -> some View {
+    private func inkToolButton(_ kind: PenSettings.ToolKind, system: String, label: String) -> some View {
         let isSelected = pen.tool == kind
         return Button {
             guard move?.didLift != true else { return }
@@ -103,20 +110,12 @@ struct PenToolbar: View {
                 pen.tool = kind
             }
         } label: {
-            Image(systemName: system)
-                .font(.system(size: 18))
-                .frame(width: 36, height: 36)
-                .foregroundStyle(isSelected ? Color.white : Color.primary)
-                .background(isSelected ? Color.accentColor : Color.clear, in: Circle())
-                .overlay(alignment: .bottomTrailing) {
-                    Circle()
-                        .fill(pen.color(for: kind))
-                        .frame(width: 10, height: 10)
-                        .overlay(Circle().strokeBorder(.white, lineWidth: 1))
-                        .offset(x: 1, y: 1)
-                }
+            ToolIcon(system: system, isSelected: isSelected, dot: pen.color(for: kind))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityHint(isSelected ? "Tap again for color and thickness" : "")
         .background { optionsPopover(popoverBinding(for: kind)) { InkOptionsView(pen: pen) } }
     }
 
@@ -127,13 +126,12 @@ struct PenToolbar: View {
             guard move?.didLift != true else { return }
             if isSelected { showEraserOptions = true } else { pen.tool = .eraser }
         } label: {
-            Image(systemName: "eraser.fill")
-                .font(.system(size: 18))
-                .frame(width: 36, height: 36)
-                .foregroundStyle(isSelected ? Color.white : Color.primary)
-                .background(isSelected ? Color.accentColor : Color.clear, in: Circle())
+            ToolIcon(system: "eraser.fill", isSelected: isSelected)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Eraser")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityHint(isSelected ? "Tap again for size" : "")
         .background { optionsPopover($showEraserOptions) { EraserOptionsView(pen: pen) } }
     }
 
@@ -145,22 +143,20 @@ struct PenToolbar: View {
         )
     }
 
-    private func toolButton(_ kind: PenSettings.ToolKind, system: String) -> some View {
+    private func toolButton(_ kind: PenSettings.ToolKind, system: String, label: String) -> some View {
         let isSelected = pen.tool == kind
         return Button {
             guard move?.didLift != true else { return }
             pen.tool = kind
         } label: {
-            Image(systemName: system)
-                .font(.system(size: 18))
-                .frame(width: 36, height: 36)
-                .foregroundStyle(isSelected ? Color.white : Color.primary)
-                .background(isSelected ? Color.accentColor : Color.clear, in: Circle())
+            ToolIcon(system: system, isSelected: isSelected)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
-    private func iconButton(_ system: String, action: @escaping () -> Void) -> some View {
+    private func iconButton(_ system: String, label: String, action: @escaping () -> Void) -> some View {
         Button {
             guard move?.didLift != true else { return }
             action()
@@ -171,6 +167,37 @@ struct PenToolbar: View {
                 .foregroundStyle(Color.primary)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+}
+
+// MARK: - Tool icon
+
+/// A drawing tool's icon: filled with the accent when selected, with the
+/// ink's colour as a dot (pen, highlighter). Shared with the squeeze bar.
+struct ToolIcon: View {
+    let system: String
+    let isSelected: Bool
+    var dot: Color? = nil
+    /// False: the accent circle is drawn by the caller (the squeeze bar's
+    /// sliding one).
+    var fill = true
+
+    var body: some View {
+        Image(systemName: system)
+            .font(.system(size: 18))
+            .frame(width: 36, height: 36)
+            .foregroundStyle(isSelected ? Color.white : Color.primary)
+            .background(isSelected && fill ? Color.accentColor : Color.clear, in: Circle())
+            .overlay(alignment: .bottomTrailing) {
+                if let dot {
+                    Circle()
+                        .fill(dot)
+                        .frame(width: 10, height: 10)
+                        .overlay(Circle().strokeBorder(.white, lineWidth: 1))
+                        .offset(x: 1, y: 1)
+                }
+            }
     }
 }
 
@@ -256,6 +283,9 @@ struct SidePopover<Content: View>: UIViewRepresentable {
 struct InkOptionsView: View {
     @Bindable var pen: PenSettings
 
+    /// VoiceOver names of the swatches, in `PenSettings.palette`'s order.
+    private static let swatchNames = ["Black", "Blue", "Red", "Green", "Orange", "Purple"]
+
     private var widthRange: ClosedRange<Double> {
         pen.tool == .highlighter ? 6...96 : 0.5...18
     }
@@ -268,19 +298,19 @@ struct InkOptionsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(pen.tool == .highlighter ? "Marker" : "Stilou")
+            Text(pen.tool == .highlighter ? "Highlighter" : "Pen")
                 .font(.headline)
 
             // Ink style (writing pen only)
             if pen.tool == .pen {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Tip cerneală").font(.subheadline).foregroundStyle(.secondary)
+                    Text("Ink").font(.subheadline).foregroundStyle(.secondary)
                     // Each ink remembers its own color and width (PenInkMemory).
-                    Picker("Tip cerneală", selection: Binding(
+                    Picker("Ink", selection: Binding(
                         get: { pen.penInk },
                         set: { ink in withAnimation(.snappy(duration: 0.2)) { pen.selectInk(ink) } }
                     )) {
-                        ForEach(PenSettings.PenInk.visible) { ink in
+                        ForEach(PenSettings.PenInk.allCases) { ink in
                             Text(ink.label).tag(ink)
                         }
                     }
@@ -290,12 +320,12 @@ struct InkOptionsView: View {
 
             // Colors
             VStack(alignment: .leading, spacing: 8) {
-                Text("Culoare").font(.subheadline).foregroundStyle(.secondary)
+                Text("Color").font(.subheadline).foregroundStyle(.secondary)
                 HStack(spacing: 12) {
-                    ForEach(PenSettings.palette, id: \.self) { color in
-                        swatch(color)
+                    ForEach(PenSettings.palette.indices, id: \.self) { index in
+                        swatch(PenSettings.palette[index], name: Self.swatchNames.indices.contains(index) ? Self.swatchNames[index] : "Color")
                     }
-                    ColorPicker("", selection: $pen.color, supportsOpacity: false)
+                    ColorPicker("More Colors", selection: $pen.color, supportsOpacity: false)
                         .labelsHidden()
                         .frame(width: 30, height: 30)
                 }
@@ -304,7 +334,7 @@ struct InkOptionsView: View {
             // Width slider
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("Grosime").font(.subheadline).foregroundStyle(.secondary)
+                    Text("Thickness").font(.subheadline).foregroundStyle(.secondary)
                     Spacer()
                     Text(String(format: "%.1f pt", shownWidth))
                         .font(.caption.monospacedDigit())
@@ -319,6 +349,9 @@ struct InkOptionsView: View {
                         ),
                         in: widthRange
                     )
+                    .accessibilityLabel("Thickness")
+                    .accessibilityValue(Double(shownWidth).formatted(.number.precision(.fractionLength(1))
+                        .locale(.app)) + " pt")
                     Circle().fill(.primary).frame(width: 16, height: 16)
                 }
                 // Live preview
@@ -337,7 +370,7 @@ struct InkOptionsView: View {
         .presentationBackground(.clear)
     }
 
-    private func swatch(_ color: Color) -> some View {
+    private func swatch(_ color: Color, name: String) -> some View {
         let isSelected = pen.color == color
         return Button {
             withAnimation(.snappy(duration: 0.2)) { pen.color = color }
@@ -356,6 +389,8 @@ struct InkOptionsView: View {
                 .scaleEffect(isSelected ? 1.1 : 1)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(name)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -367,11 +402,11 @@ struct EraserOptionsView: View {
     var body: some View {
         let range = PenSettings.eraserWidthRange
         VStack(alignment: .leading, spacing: 18) {
-            Text("Gumă").font(.headline)
+            Text("Eraser").font(.headline)
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("Mărime").font(.subheadline).foregroundStyle(.secondary)
+                    Text("Size").font(.subheadline).foregroundStyle(.secondary)
                     Spacer()
                     Text(String(format: "%.0f pt", pen.eraserWidth))
                         .font(.caption.monospacedDigit())
@@ -388,6 +423,9 @@ struct EraserOptionsView: View {
                         ),
                         in: Double(range.lowerBound)...Double(range.upperBound)
                     )
+                    .accessibilityLabel("Size")
+                    .accessibilityValue(Double(pen.eraserWidth).formatted(.number.precision(.fractionLength(0))
+                        .locale(.app)) + " pt")
                     Circle().strokeBorder(.primary, lineWidth: 1).frame(width: 18, height: 18)
                 }
                 // Live preview at real size (capped to the card).

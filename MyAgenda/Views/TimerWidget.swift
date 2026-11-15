@@ -233,8 +233,8 @@ final class WorkTimer {
 
     private func scheduleNotification(after seconds: TimeInterval) {
         let content = UNMutableNotificationContent()
-        content.title = "Timer terminat"
-        content.body = "Intervalul de \(durationMinutes) min s-a încheiat."
+        content.title = "Timer Done"
+        content.body = "Your \(durationMinutes)-minute interval is over."
         content.sound = .default
         content.interruptionLevel = .timeSensitive
 
@@ -308,7 +308,7 @@ private struct TimerOptions: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Interval de lucru").font(.headline)
+            Text("Work Interval").font(.headline)
 
             LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(WorkTimer.presets, id: \.self) { minutes in
@@ -331,7 +331,7 @@ private struct TimerOptions: View {
             Stepper(value: Binding(get: { timer.durationMinutes },
                                    set: { timer.setMinutes($0) }),
                     in: 1...180) {
-                Text("Personalizat: \(timer.durationMinutes) min")
+                Text("Custom: \(timer.durationMinutes) min")
                     .font(.subheadline)
             }
 
@@ -339,11 +339,11 @@ private struct TimerOptions: View {
 
             HStack {
                 Button { timer.reset() } label: {
-                    Label("Resetează", systemImage: "arrow.counterclockwise")
+                    Label("Reset", systemImage: "arrow.counterclockwise")
                 }
                 Spacer()
                 Button(role: .destructive) { onClose() } label: {
-                    Label("Închide", systemImage: "xmark")
+                    Label("Close", systemImage: "xmark")
                 }
             }
             .font(.subheadline)

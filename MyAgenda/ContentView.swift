@@ -27,6 +27,9 @@ struct ContentView: View {
     @State private var timerCenter: CGPoint?
     @GestureState private var timerDrag: CGSize = .zero
 
+    @AppStorage("welcomeTourSeen") private var tourSeen = false
+    @State private var showTour = false
+
     private var selectedNotebook: Notebook? {
         notebooks.first { $0.id == selectedNotebookID } ?? notebooks.first
     }
@@ -43,7 +46,8 @@ struct ContentView: View {
                     ),
                     onNewNotebook: { showNewNotebook = true },
                     onEditNotebook: { showEditNotebook = true },
-                    onShowTimer: { showTimer = true }
+                    onShowTimer: { showTimer = true },
+                    onShowTour: { showTour = true }
                 )
                 .id(notebook.id)
             } else {
@@ -94,7 +98,10 @@ struct ContentView: View {
                 pendingNotebookID = nil
             }
         }
-        .onAppear(perform: bootstrap)
+        .onAppear {
+            bootstrap()
+            if !tourSeen { showTour = true }
+        }
         .sheet(isPresented: $showNewNotebook) {
             NotebookEditorSheet(existing: nil) { title, hex, style, paper in
                 createNotebook(title: title, hex: hex, style: style, paper: paper)
@@ -124,11 +131,16 @@ struct ContentView: View {
                 )
             }
         }
+        // Any way out counts as seen: Start Writing, the X or a swipe down.
+        .sheet(isPresented: $showTour, onDismiss: { tourSeen = true }) {
+            WelcomeTour(accent: selectedNotebook?.accentColor ?? .blue)
+                .presentationSizing(.form)
+        }
     }
 
     private func bootstrap() {
         if notebooks.isEmpty {
-            let notebook = Notebook(title: "Agendă", accentHex: Notebook.themeColors[0], pageStyle: .dots, sortIndex: 0)
+            let notebook = Notebook(title: "Agenda", accentHex: Notebook.themeColors[0], pageStyle: .dots, sortIndex: 0)
             context.insert(notebook)
             try? context.save()
             selectedNotebookID = notebook.id

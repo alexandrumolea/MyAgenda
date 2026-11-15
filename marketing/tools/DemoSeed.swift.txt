@@ -1,0 +1,146 @@
+// Demo content for App Store screenshots. Lives only in the throwaway build
+// copy, never in the repo. Runs with the launch argument -demoSeed.
+
+import Foundation
+import PencilKit
+import SwiftData
+import UIKit
+
+enum DemoSeed {
+    struct InkStroke: Decodable { var kind: String; var color: String; var width: Double; var points: [[Double]] }
+
+    static func run(in context: ModelContext) {
+        guard ProcessInfo.processInfo.arguments.contains("-demoSeed") else { return }
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        guard let data = try? Data(contentsOf: docs.appendingPathComponent("demo-pages.json")),
+              let ink = try? JSONDecoder().decode([String: [InkStroke]].self, from: data) else {
+            print("DEMO: no demo-pages.json"); return
+        }
+        for nb in (try? context.fetch(FetchDescriptor<Notebook>())) ?? [] { context.delete(nb) }
+        for p in (try? context.fetch(FetchDescriptor<JournalPage>())) ?? [] { context.delete(p) }
+        try? context.save()
+
+        let agenda = Notebook(title: "Agenda", accentHex: "#0A84FF", pageStyle: .dots, sortIndex: 0)
+        let work = Notebook(title: "Work", accentHex: "#30D158", pageStyle: .lines, sortIndex: 1)
+        let journal = Notebook(title: "Journal", accentHex: "#BF5AF2", pageStyle: .plain, sortIndex: 2)
+        journal.paper = .yellow
+        [agenda, work, journal].forEach(context.insert)
+
+        let today = Calendar.current.startOfDay(for: .now)
+        func day(_ offset: Int) -> Date { Calendar.current.date(byAdding: .day, value: offset, to: today)! }
+
+        @discardableResult
+        func page(_ key: String, _ offset: Int, in nb: Notebook, title: String = "", tags: [String] = [],
+                  favorite: Bool = false, paper: PaperColor? = nil, order: Int = 0) -> JournalPage {
+            let p = JournalPage(day: day(offset), orderInDay: order, notebook: nb)
+            p.title = title
+            p.tags = tags
+            p.isFavorite = favorite
+            if let paper { p.paperRaw = paper.rawValue }
+            p.canvasWidth = 834
+            p.canvasHeight = 1210
+            p.keepsWhenEmpty = true
+            p.drawingData = drawing(ink[key] ?? []).dataRepresentation()
+            context.insert(p)
+            return p
+        }
+
+        let todayPage = page("today", 0, in: agenda, title: "Week plan", tags: ["home"], favorite: true)
+        checklist(on: todayPage, x: 0.065, y: 0.573, width: 0.42,
+                  [("Oat milk", true), ("Coffee beans", true), ("Lemons", false), ("Basil", false), ("Sourdough bread", false)])
+        let cabin = page("cabin", -1, in: agenda, title: "Cabin trip", tags: ["travel"], favorite: true, paper: .yellow)
+        checklist(on: cabin, x: 0.065, y: 0.453, width: 0.4,
+                  [("Boots", true), ("Rain jacket", true), ("Headlamp", false), ("Thermos", false), ("Paper map", false)])
+        let review = page("review", -2, in: agenda, title: "Design review", tags: ["design review"], favorite: true)
+        textBox(on: review, x: 0.07, y: 0.748, width: 0.62, background: "#FFD60A",
+                "Ana sends the new icons by Wednesday. Prototype review on Thursday at 11:00.")
+        page("cn2", -3, in: agenda, title: "Client · Nova", tags: ["client nova"], order: 0)
+        page("goals", -3, in: agenda, title: "Week goals", tags: ["home"], order: 1)
+        page("evening", -4, in: agenda, title: "Evening notes", tags: ["journal"], paper: .dark)
+        page("ws3", -5, in: agenda, title: "Weekly sync", tags: ["weekly sync"], order: 0)
+        page("budget", -5, in: agenda, title: "November budget", tags: ["home"], order: 1)
+        let oneOnOne = page("nov9", -6, in: agenda, title: "1:1 Maria", tags: ["1:1"], favorite: true)
+        _ = oneOnOne
+        let photos = page("photos", -7, in: agenda, title: "Apuseni weekend", tags: ["travel"], favorite: true)
+        image(on: photos, "photo-lake.jpg", x: 0.07, y: 0.204, width: 0.56)
+        image(on: photos, "photo-cabin.jpg", x: 0.40, y: 0.708, width: 0.53)
+        page("dr2", -9, in: agenda, title: "Design review", tags: ["design review"], order: 0)
+        page("nov6", -9, in: agenda, order: 1)
+        page("ws2", -12, in: agenda, title: "Weekly sync", tags: ["weekly sync"])
+        page("cn1", -11, in: agenda, title: "Client · Nova", tags: ["client nova"], order: 0)
+        page("nov4", -11, in: agenda, title: "Ideas", tags: ["ideas"], order: 1)
+        page("m1c", -13, in: agenda, title: "1:1 Maria", tags: ["1:1"], order: 0)
+        page("nov2", -13, in: agenda, order: 1)
+        page("dr1", -16, in: agenda, title: "Design review v1", tags: ["design review"])
+        page("ws1", -19, in: agenda, title: "Weekly sync", tags: ["weekly sync"])
+        page("m1b", -20, in: agenda, title: "1:1 Maria", tags: ["1:1"])
+        page("m1a", -27, in: agenda, title: "1:1 Maria", tags: ["1:1"])
+        page("monday", 1, in: agenda)
+        page("work1", 0, in: work, title: "Sprint 47")
+        page("journal1", 0, in: journal, title: "Morning pages", tags: ["journal"])
+        try? context.save()
+
+        let d = UserDefaults.standard
+        d.set(agenda.id.uuidString, forKey: "position.notebook")
+        d.set(todayPage.id.uuidString, forKey: "position.page.\(agenda.id.uuidString)")
+        d.set(Date.now.timeIntervalSince1970, forKey: "position.at")
+        d.set(false, forKey: "topBarHidden")
+        d.set(false, forKey: "penToolbarHidden")
+        print("DEMO: seeded")
+    }
+
+    static func image(on page: JournalPage, _ file: String, x: Double, y: Double, width: Double) {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        guard let data = try? Data(contentsOf: docs.appendingPathComponent(file)),
+              let img = UIImage(data: data) else { print("DEMO: no \(file)"); return }
+        let box = ImageBox(x: x, y: y, widthFraction: width, aspectRatio: Double(img.size.height / img.size.width),
+                           imageData: data, page: page)
+        page.modelContext?.insert(box)
+    }
+
+    static func checklist(on page: JournalPage, x: Double, y: Double, width: Double, _ items: [(String, Bool)]) {
+        let box = ChecklistBox(x: x, y: y, widthFraction: width, page: page)
+        box.items = items.map { ChecklistItem(text: $0.0, checked: $0.1) }
+        page.modelContext?.insert(box)
+    }
+
+    static func textBox(on page: JournalPage, x: Double, y: Double, width: Double, background: String, _ text: String) {
+        let box = TextBox(x: x, y: y, widthFraction: width, page: page)
+        box.backgroundColorRaw = background
+        let attributed = NSAttributedString(string: text, attributes: [.font: UIFont.systemFont(ofSize: 18),
+                                                                       .foregroundColor: UIColor.black])
+        box.rtfData = (try? attributed.data(from: NSRange(location: 0, length: attributed.length),
+                                            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])) ?? Data()
+        page.modelContext?.insert(box)
+    }
+
+    static func color(_ hex: String) -> UIColor {
+        let v = Int(hex.dropFirst(), radix: 16) ?? 0
+        return UIColor(red: CGFloat(v >> 16 & 255) / 255, green: CGFloat(v >> 8 & 255) / 255,
+                       blue: CGFloat(v & 255) / 255, alpha: 1)
+    }
+
+    /// Strokes in the app's own pen signature (force 1, upright, ends
+    /// tripled), so `InkRenderer` draws them as gel ink.
+    static func drawing(_ strokes: [InkStroke]) -> PKDrawing {
+        let date = Date()
+        var out: [PKStroke] = []
+        for (n, s) in strokes.enumerated() where !s.points.isEmpty {
+            let marker = s.kind == "marker"
+            var pts: [PKStrokePoint] = s.points.enumerated().map { i, p in
+                let w = marker ? s.width : s.width * (1 + 0.12 * sin(Double(i) * 0.35 + Double(n)))
+                let size = marker ? w : (w + 4) / 2
+                return PKStrokePoint(location: CGPoint(x: p[0], y: p[1]), timeOffset: Double(i) * 0.008,
+                                     size: CGSize(width: size, height: size), opacity: 1, force: 1,
+                                     azimuth: 0, altitude: .pi / 2)
+            }
+            if pts.count == 1 { pts.append(pts[0]) }
+            pts.insert(contentsOf: [pts[0], pts[0]], at: 0)
+            pts.append(contentsOf: [pts[pts.count - 1], pts[pts.count - 1]])
+            let path = PKStrokePath(controlPoints: pts, creationDate: date)
+            out.append(PKStroke(ink: PKInk(marker ? .marker : .pen, color: color(s.color)), path: path))
+        }
+        // Highlights first, so they sit under the writing in document order too.
+        return PKDrawing(strokes: out.filter { $0.ink.inkType == .marker } + out.filter { $0.ink.inkType != .marker })
+    }
+}

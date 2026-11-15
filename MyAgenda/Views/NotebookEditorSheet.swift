@@ -43,11 +43,11 @@ struct NotebookEditorSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Nume") {
-                    TextField("Nume notebook", text: $title)
+                Section("Name") {
+                    TextField("Notebook Name", text: $title)
                 }
 
-                Section("Culoare temă") {
+                Section("Theme Color") {
                     LazyVGrid(columns: columns, spacing: 14) {
                         ForEach(Notebook.themeColors, id: \.self) { hex in
                             Circle()
@@ -65,8 +65,8 @@ struct NotebookEditorSheet: View {
                     .padding(.vertical, 4)
                 }
 
-                Section("Stil pagină") {
-                    Picker("Stil pagină", selection: $style) {
+                Section("Page Style") {
+                    Picker("Page Style", selection: $style) {
                         ForEach(PageStyle.allCases) { s in
                             Label(s.label, systemImage: s.symbol).tag(s)
                         }
@@ -75,16 +75,16 @@ struct NotebookEditorSheet: View {
                 }
 
                 Section {
-                    Picker("Hârtie", selection: $paper) {
+                    Picker("Paper", selection: $paper) {
                         ForEach(PaperColor.allCases) { p in
                             Text(p.label).tag(p)
                         }
                     }
                     .pickerStyle(.segmented)
                 } header: {
-                    Text("Hârtie")
+                    Text("Paper")
                 } footer: {
-                    Text("Pentru toate paginile caietului. O pagină își poate alege hârtia din meniul „…”.")
+                    Text("Applies to every page in this notebook. A page can choose its own paper from the “…” menu.")
                 }
 
                 if canDelete {
@@ -92,32 +92,32 @@ struct NotebookEditorSheet: View {
                         Button(role: .destructive) {
                             showDeleteConfirm = true
                         } label: {
-                            Label("Șterge notebook-ul", systemImage: "trash")
+                            Label("Delete Notebook", systemImage: "trash")
                         }
                     }
                 }
             }
-            .navigationTitle(existing == nil ? "Notebook nou" : "Editează notebook")
+            .navigationTitle(existing == nil ? "New Notebook" : "Edit Notebook")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Anulează") { dismiss() }
+                    Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Salvează") {
+                    Button("Save") {
                         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
-                        onSave(name.isEmpty ? "Agendă" : name, accentHex, style, paper)
+                        onSave(name.isEmpty ? "Agenda" : name, accentHex, style, paper)
                         dismiss()
                     }
                 }
             }
-            .confirmationDialog("Ștergi notebook-ul și toate paginile lui?",
+            .confirmationDialog("Delete this notebook and all its pages?",
                                 isPresented: $showDeleteConfirm, titleVisibility: .visible) {
-                Button("Șterge", role: .destructive) {
+                Button("Delete", role: .destructive) {
                     onDelete()
                     dismiss()
                 }
-                Button("Anulează", role: .cancel) {}
+                Button("Cancel", role: .cancel) {}
             }
         }
     }

@@ -16,7 +16,9 @@ import UIKit
 /// touches anywhere else fall through to the page (Pencil included).
 final class DockHitRegions {
     var rects: [String: CGRect] = [:]
-    func contains(_ point: CGPoint) -> Bool { rects.values.contains { $0.contains(point) } }
+    func contains(_ point: CGPoint, except skipped: String? = nil) -> Bool {
+        rects.contains { $0.key != skipped && $0.value.contains(point) }
+    }
 }
 
 extension View {
@@ -70,11 +72,15 @@ struct ToolbarDock<Content: View>: UIViewRepresentable {
     var regions: DockHitRegions
     /// iPad: holding the bar lifts it (see ToolbarMove). Nil: it stays put.
     var move: ToolbarMove?
+    /// iPad: a touch outside the open squeeze bar closes it.
+    var squeeze: SqueezeBarState?
     var content: Content
 
-    init(regions: DockHitRegions, move: ToolbarMove? = nil, @ViewBuilder content: () -> Content) {
+    init(regions: DockHitRegions, move: ToolbarMove? = nil, squeeze: SqueezeBarState? = nil,
+         @ViewBuilder content: () -> Content) {
         self.regions = regions
         self.move = move
+        self.squeeze = squeeze
         self.content = content()
     }
 
@@ -96,6 +102,7 @@ struct ToolbarDock<Content: View>: UIViewRepresentable {
         container.host = context.coordinator
         container.regions = regions
         container.move = move
+        container.squeeze = squeeze
         NSLayoutConstraint.activate([
             hosted.topAnchor.constraint(equalTo: container.topAnchor),
             hosted.leadingAnchor.constraint(equalTo: container.leadingAnchor),
@@ -131,6 +138,7 @@ struct ToolbarDock<Content: View>: UIViewRepresentable {
         context.coordinator.rootView = content
         container.regions = regions
         container.move = move
+        container.squeeze = squeeze
     }
 }
 
@@ -140,6 +148,7 @@ final class ToolbarDockView: UIView, UIGestureRecognizerDelegate {
     weak var host: UIViewController?
     var regions: DockHitRegions?
     var move: ToolbarMove?
+    var squeeze: SqueezeBarState?
     weak var liftPress: UILongPressGestureRecognizer?
     weak var hidePan: DockSwipeRecognizer?
     /// Where the finger lifted the bar; nil when nothing is lifted.
@@ -154,8 +163,16 @@ final class ToolbarDockView: UIView, UIGestureRecognizerDelegate {
         // second finger mid-lift or mid-swipe, though: the first one still
         // must not act.
         if event?.type == .touches, liftStart == nil, !isActive(hidePan) { move?.didLift = false }
-        guard let hosted, let regions,
-              regions.contains(convert(point, to: hosted)) else { return nil }
+        guard let hosted, let regions else { return nil }
+        let p = convert(point, to: hosted)
+        // The squeeze bar counts only while open: it is still fading out
+        // after it closed.
+        let onSqueezeBar = squeeze?.isOpen == true
+            && regions.rects[SqueezeBarState.region]?.contains(p) == true
+        // A touch anywhere else closes it and goes on as usual. Touches only:
+        // the hovering Pencil hit-tests too.
+        if event?.type == .touches, squeeze?.isOpen == true, !onSqueezeBar { squeeze?.close() }
+        guard onSqueezeBar || regions.contains(p, except: SqueezeBarState.region) else { return nil }
         let hit = super.hitTest(point, with: event)
         return hit === self ? nil : hit
     }
@@ -240,10 +257,13 @@ final class ToolbarDockView: UIView, UIGestureRecognizerDelegate {
         }
     }
 
-    /// Only a hold or a swipe on the bar itself acts (not on the reopen handle).
+    /// Only a hold or a swipe on the bar itself acts (not on the reopen handle,
+    /// nor on the open squeeze bar where it covers a side bar).
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         guard let hosted, let bar = regions?.rects["toolbar"] else { return false }
-        return bar.contains(touch.location(in: hosted))
+        let p = touch.location(in: hosted)
+        if squeeze?.isOpen == true, regions?.rects[SqueezeBarState.region]?.contains(p) == true { return false }
+        return bar.contains(p)
     }
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -308,6 +328,9 @@ struct BottomToolbarLayer: View {
     let showsToolbar: Bool
     /// The persisted truth; the states below stage the animation around it.
     @Binding var toolbarHidden: Bool
+    /// iPad, hidden from the menu: no handle either. Left on while the bar
+    /// shows again, so the handle doesn't flash as it pours back.
+    @Binding var handleless: Bool
     /// iPad: width of the open tags panel, kept clear on the left.
     var leadingInset: CGFloat = 0
     /// iPad: hold-to-move (see ToolbarMove). Nil on iPhone: always the bottom.
@@ -315,6 +338,10 @@ struct BottomToolbarLayer: View {
     /// From the top of the screen to below the top bar row; the side docks
     /// stay under it.
     var topReserve: CGFloat = 0
+    /// iPad: the bar the Pencil Pro's squeeze opens. Nil on iPhone.
+    var squeezeBar: SqueezeBarState? = nil
+    /// The screen's safe area: the host itself sees none.
+    var safeArea = EdgeInsets()
     var onAddText: () -> Void
     var onAddChecklist: () -> Void
     var onAddPhoto: () -> Void
@@ -450,7 +477,7 @@ struct BottomToolbarLayer: View {
                         // A drag cut short (call, backgrounding) never gets onEnded.
                         .onDisappear { dragX = 0 }
                 }
-                if docked {
+                if docked && !handleless {
                     reopenHandle
                         .dockHitRegion("handle", in: regions)
                         .padding(.bottom, edge == .bottom ? Self.gap + 8 : 0)
@@ -473,11 +500,24 @@ struct BottomToolbarLayer: View {
         // Fills the dock, so the hosting view never resizes mid-flow and clips
         // the pills while they drain or pour. Only the hit regions take touches.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Outside the container, so its glass never blends with the main bar's;
+        // there whether or not the main bar is shown.
+        .overlay {
+            if !isPhone, let squeezeBar {
+                // No bottom inset: the host already ends above the home indicator.
+                SqueezeToolBar(state: squeezeBar, pen: pen, regions: regions, containerSize: containerSize,
+                               bounds: EdgeInsets(top: safeArea.top, leading: max(safeArea.leading, leadingInset),
+                                                  bottom: 0, trailing: safeArea.trailing),
+                               onAddPhoto: onAddPhoto)
+            }
+        }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { containerSize = $0 }
         .coordinateSpace(.named(ToolbarDockSpace.name))
         .animation(NotebookPagesView.liquid, value: showsToolbar)
         .onChange(of: edge, initial: true) { _, edge in move?.edge = edge }
         .onChange(of: sidesFit, initial: true) { _, fits in move?.isEnabled = fits }
+        // Rotation or a resize: the bar would no longer sit by the Pencil.
+        .onChange(of: containerSize) { squeezeBar?.close() }
         // Released: snaps to the nearest dock (never the top). Cancelled: back
         // to the dock it came from.
         .onChange(of: move?.releaseCount) {
@@ -540,6 +580,8 @@ struct BottomToolbarLayer: View {
         case .right: x > 30 || flick > 90
         }
         if hides {
+            // A swipe always docks into the handle.
+            handleless = false
             hide()
         } else {
             withAnimation(NotebookPagesView.liquid) { dragX = 0 }
@@ -572,6 +614,7 @@ struct BottomToolbarLayer: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Show Tools")
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
         .glassEffectTransition(.identity)
     }

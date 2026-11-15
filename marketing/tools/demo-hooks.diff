@@ -1,0 +1,24 @@
+--- /Users/alexandrumolea/MyApps/MyAgenda/MyAgenda/MyAgendaApp.swift	2026-11-08 22:50:05
++++ MyAgenda/MyAgendaApp.swift	2026-11-15 15:19:21
+@@ -29,6 +29,7 @@
+         } catch {
+             fatalError("Could not create ModelContainer: \(error)")
+         }
++        DemoSeed.run(in: container.mainContext)
+         TestInkCleanup.runOnce(in: container.mainContext)
+         // Listening before the first keyboard: a text view announces the
+         // keyboard before it says it started editing.
+--- /Users/alexandrumolea/MyApps/MyAgenda/MyAgenda/Views/NotebookPagesView.swift	2026-11-14 10:55:02
++++ MyAgenda/Views/NotebookPagesView.swift	2026-11-15 15:25:41
+@@ -253,6 +253,11 @@
+                 onClose: { showTagsSidebar = false }
+             )
+         }
++        .task {
++            guard ProcessInfo.processInfo.arguments.contains("-demoSqueeze") else { return }
++            try? await Task.sleep(for: .seconds(3))
++            squeezeBar.toggle(at: CGPoint(x: 600, y: 910))
++        }
+         // Leaving the app: nothing may stay behind in the save delay, or it
+         // would never reach iCloud (and could be lost).
+         .onChange(of: scenePhase) { _, phase in

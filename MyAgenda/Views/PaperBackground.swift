@@ -21,9 +21,9 @@ nonisolated enum PaperColor: String, CaseIterable, Identifiable, Sendable {
 
     var label: String {
         switch self {
-        case .white: return "Alb"
-        case .yellow: return "Galben"
-        case .dark: return "Întunecat"
+        case .white: return "White"
+        case .yellow: return "Yellow"
+        case .dark: return "Dark"
         }
     }
 
@@ -87,9 +87,9 @@ enum PageStyle: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .dots: return "Puncte"
-        case .lines: return "Linii"
-        case .plain: return "Simplu"
+        case .dots: return "Dots"
+        case .lines: return "Lines"
+        case .plain: return "Plain"
         }
     }
 

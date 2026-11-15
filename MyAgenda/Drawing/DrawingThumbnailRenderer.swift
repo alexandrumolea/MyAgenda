@@ -9,7 +9,7 @@
 //  is a fingerprint of what is actually on the page, so a thumbnail is
 //  rendered once per version of the page: an edit always refreshes it, and an
 //  unchanged page never renders again, not even after a relaunch (thumbnails
-//  are also kept on disk, one per page).
+//  are also kept on disk, one per page and size).
 //
 
 import SwiftUI
@@ -18,10 +18,15 @@ import CryptoKit
 
 enum DrawingThumbnailRenderer {
     // NSCache is thread-safe, so it's fine to touch from the off-main render path.
-    private nonisolated(unsafe) static let cache = NSCache<NSString, UIImage>()
+    // Capped by decoded bytes: spreads keep large thumbnails, several per page.
+    private nonisolated(unsafe) static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 100 * 1024 * 1024
+        return cache
+    }()
 
     /// Bump when the drawing code changes, so old thumbnails are redone.
-    private static let renderVersion = 9
+    private static let renderVersion = 10
 
     /// Hash of each page's drawing, so megabytes of ink are only re-hashed
     /// after the page changes.
@@ -143,19 +148,23 @@ enum DrawingThumbnailRenderer {
         let key = snapshot.key as NSString
         if let cached = cache.object(forKey: key) { return cached }
         let image = render(snapshot)
-        cache.setObject(image, forKey: key)
+        cache.setObject(image, forKey: key, cost: cost(of: image))
         store(image, key: snapshot.key)
         return image
     }
 
     /// The thumbnail for `key` if it was already rendered: from memory, else
-    /// from disk.
+    /// from disk. Decoded here, off the main thread, not at the first draw.
     nonisolated static func cachedThumbnail(forKey key: String) -> UIImage? {
         if let cached = cache.object(forKey: key as NSString) { return cached }
         guard let data = try? Data(contentsOf: fileURL(forKey: key)),
-              let image = UIImage(data: data) else { return nil }
-        cache.setObject(image, forKey: key as NSString)
+              let image = UIImage(data: data)?.preparingForDisplay() else { return nil }
+        cache.setObject(image, forKey: key as NSString, cost: cost(of: image))
         return image
+    }
+
+    private nonisolated static func cost(of image: UIImage) -> Int {
+        image.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
     }
 
     // MARK: Disk
@@ -169,14 +178,18 @@ enum DrawingThumbnailRenderer {
         directory.appendingPathComponent(key).appendingPathExtension("jpg")
     }
 
-    /// Writes the thumbnail and drops the page's older versions.
+    /// Writes the thumbnail and drops the page's older versions. Every size of
+    /// this version stays (the grid and the spreads each have their own).
     private nonisolated static func store(_ image: UIImage, key: String) {
         guard let data = image.jpegData(compressionQuality: 0.85) else { return }
         let manager = FileManager.default
         try? manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        // The key is "uuid-digest-WxH": the page, then this version of it.
         let pagePrefix = String(key.prefix(36))
+        let versionPrefix = key.lastIndex(of: "-").map { String(key[...$0]) } ?? key
         let files = (try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-        for file in files where file.lastPathComponent.hasPrefix(pagePrefix) {
+        for file in files where file.lastPathComponent.hasPrefix(pagePrefix)
+                            && !file.lastPathComponent.hasPrefix(versionPrefix) {
             try? manager.removeItem(at: file)
         }
         try? data.write(to: fileURL(forKey: key), options: .atomic)

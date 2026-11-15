@@ -83,7 +83,7 @@ struct EditBar: View {
             }
             .buttonStyle(.plain)
             .glassEffect(.regular.tint(accent), in: .circle)
-            .accessibilityLabel("Gata")
+            .accessibilityLabel("Done")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -118,7 +118,7 @@ struct EditBar: View {
         case .background:
             HStack(spacing: 2) {
                 back
-                tool("circle.slash", isOn: state.backgroundHex.isEmpty, label: "Fără fundal") {
+                tool("circle.slash", isOn: state.backgroundHex.isEmpty, label: "No Background") {
                     actions.setBackground("")
                 }
                 ForEach(EditPalette.background, id: \.self) { hex in
@@ -137,8 +137,8 @@ struct EditBar: View {
     @ViewBuilder private var textTools: some View {
         tool("bold", isOn: state.isBold, label: "Bold", action: actions.toggleBold)
         tool("italic", isOn: state.isItalic, label: "Italic", action: actions.toggleItalic)
-        tool("underline", isOn: state.isUnderline, label: "Subliniat", action: actions.toggleUnderline)
-        tool("list.bullet", isOn: state.isBulleted, label: "Listă", action: actions.toggleBullets)
+        tool("underline", isOn: state.isUnderline, label: "Underline", action: actions.toggleUnderline)
+        tool("list.bullet", isOn: state.isBulleted, label: "List", action: actions.toggleBullets)
         if isCompact {
             separator
             tool("textformat.size", label: "Format") { panel = .more }
@@ -151,14 +151,14 @@ struct EditBar: View {
     }
 
     @ViewBuilder private var checklistTools: some View {
-        tool("plus", label: "Adaugă", action: actions.addItem)
+        tool("plus", label: "Add Item", action: actions.addItem)
         separator
         backgroundTool
     }
 
     @ViewBuilder private var sizeTools: some View {
-        tool("textformat.size.smaller", label: "Micșorează") { actions.changeSize(-2) }
-        tool("textformat.size.larger", label: "Mărește") { actions.changeSize(2) }
+        tool("textformat.size.smaller", label: "Smaller") { actions.changeSize(-2) }
+        tool("textformat.size.larger", label: "Larger") { actions.changeSize(2) }
     }
 
     @ViewBuilder private var colorTools: some View {
@@ -171,11 +171,11 @@ struct EditBar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Culoare text")
+        .accessibilityLabel("Text Color")
 
         backgroundTool
 
-        tool(alignmentSymbol, label: "Aliniere") {
+        tool(alignmentSymbol, label: "Alignment") {
             actions.setAlignment(state.alignment == .left ? .center
                                  : state.alignment == .center ? .right : .left)
         }
@@ -195,7 +195,7 @@ struct EditBar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Culoare fundal")
+        .accessibilityLabel("Background Color")
     }
 
     private var backgroundFill: Color {
@@ -213,7 +213,7 @@ struct EditBar: View {
     // MARK: Pieces
 
     private var back: some View {
-        tool("chevron.left", label: "Înapoi") {
+        tool("chevron.left", label: "Back") {
             panel = (isCompact && kind == .text && panel != .more) ? .more : .tools
         }
     }

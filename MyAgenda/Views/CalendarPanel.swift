@@ -162,7 +162,7 @@ struct CalendarPanel: View {
             Button { changeMonth(by: -1) } label: { chevron("chevron.left") }
                 .buttonStyle(.plain)
             Spacer()
-            Text(month.formatted(.dateTime.month(.wide).year()))
+            Text(month.formatted(.dateTime.month(.wide).year().locale(.app)))
                 .font(.subheadline.weight(.semibold))
                 .contentTransition(.numericText())
             Spacer()
@@ -180,7 +180,10 @@ struct CalendarPanel: View {
     }
 
     private var weekdays: some View {
-        let symbols = calendar.veryShortStandaloneWeekdaySymbols
+        // English names, but the week still starts where the device's region says.
+        var english = calendar
+        english.locale = .app
+        let symbols = english.veryShortStandaloneWeekdaySymbols
         let first = calendar.firstWeekday - 1
         let ordered = Array(symbols[first...] + symbols[..<first])
         return HStack(spacing: 0) {

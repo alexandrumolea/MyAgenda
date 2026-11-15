@@ -20,7 +20,7 @@ struct TimerLiveActivity: Widget {
                     .font(.title2)
                     .foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Interval de lucru")
+                    Text("Work Interval")
                         .font(.subheadline.weight(.medium))
                     Text("\(context.attributes.durationMinutes) min")
                         .font(.caption)
@@ -37,7 +37,7 @@ struct TimerLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Label("Lucru", systemImage: "timer")
+                    Label("Work", systemImage: "timer")
                         .font(.caption)
                 }
                 DynamicIslandExpandedRegion(.trailing) {

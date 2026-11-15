@@ -17,29 +17,49 @@ final class PenSettings {
         case lasso   // "cut": select strokes and move/cut/copy them
     }
 
-    /// Selectable ink styles for the writing pen.
-    enum PenInk: String, CaseIterable, Identifiable {
-        case monoline
-        case pen
-        /// Keeps the raw value of the old "Pix 2" slot, so the persisted
-        /// `pen.ink` and its `pen.ink.pen2.*` memory carry over as they are.
-        case gel = "pen2"
-        case pencil
-        case crayon
-
-        var id: String { rawValue }
-
-        /// The inks the surface draws; the others stay only so an old
-        /// `pen.ink` value still decodes.
-        static let visible: [PenInk] = [.gel, .monoline]
+    /// What the Pencil's double-tap does (iPad), chosen in the "…" menu. The
+    /// system's preferred tap action is not followed.
+    enum DoubleTapAction: String, CaseIterable {
+        case lasso, highlighter, eraser, previousTool, quickTools, undo, nothing
 
         var label: String {
             switch self {
-            case .monoline: return "Uniform"
-            case .pen: return "Pix"
+            case .lasso: return "Lasso"
+            case .highlighter: return "Highlighter"
+            case .eraser: return "Eraser"
+            case .previousTool: return "Previous Tool"
+            case .quickTools: return "Quick Tools"
+            case .undo: return "Undo"
+            case .nothing: return "Nothing"
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .lasso: return "lasso"
+            case .highlighter: return "highlighter"
+            case .eraser: return "eraser"
+            case .previousTool: return "arrow.left.arrow.right"
+            case .quickTools: return "rectangle.3.group"
+            case .undo: return "arrow.uturn.backward"
+            case .nothing: return "nosign"
+            }
+        }
+    }
+
+    /// Selectable ink styles for the writing pen.
+    enum PenInk: String, CaseIterable, Identifiable {
+        /// Keeps the raw value of the old "Pix 2" slot, so the persisted
+        /// `pen.ink` and its `pen.ink.pen2.*` memory carry over as they are.
+        case gel = "pen2"
+        case monoline
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
             case .gel: return "Gel"
-            case .pencil: return "Creion"
-            case .crayon: return "Cretă"
+            case .monoline: return "Uniform"
             }
         }
 
@@ -49,7 +69,11 @@ final class PenSettings {
         }
     }
 
-    var tool: ToolKind = .pen
+    // Only a real change: the toolbar sets the lasso again over itself.
+    var tool: ToolKind = .pen { didSet { if tool != oldValue { previousTool = oldValue } } }
+    /// The tool before the current one, for the Pencil's double-tap. This
+    /// session only.
+    private(set) var previousTool: ToolKind?
     var penInk: PenInk = .gel { didSet { persist() } }
     // Each tool keeps its own color.
     var penColor: Color = .black { didSet { persist() } }
@@ -89,12 +113,7 @@ final class PenSettings {
             highlighterWidth = CGFloat(d.double(forKey: Keys.highlighterWidth))
         }
         // An ink no longer offered falls back to the gel pen.
-        if let inkRaw = d.string(forKey: Keys.ink), let ink = PenInk(rawValue: inkRaw),
-           PenInk.visible.contains(ink) {
-            penInk = ink
-        } else {
-            penInk = .gel
-        }
+        penInk = d.string(forKey: Keys.ink).flatMap(PenInk.init(rawValue:)) ?? .gel
         // Until chosen, the eraser keeps the size it had before (3× the pen).
         eraserWidth = d.object(forKey: Keys.eraserWidth) != nil
             ? CGFloat(d.double(forKey: Keys.eraserWidth))
@@ -147,8 +166,10 @@ final class PenSettings {
 
     // MARK: - Apple Pencil Pro gestures
 
-    /// Squeeze toggles the eraser (and back to pen).
-    func toggleEraser() { tool = (tool == .eraser) ? .pen : .eraser }
-    /// Double-tap toggles the lasso (and back to pen).
-    func toggleLasso() { tool = (tool == .lasso) ? .pen : .lasso }
+    /// Double-tap on the lasso or the eraser: to it, or back from it to the
+    /// tool before (or the pen).
+    func toggle(_ kind: ToolKind) { tool = tool == kind ? (previousTool ?? .pen) : kind }
+    /// Double-tap on Previous Tool: swaps with it. With none yet, the pen
+    /// goes to the eraser and the rest to the pen.
+    func swapWithPreviousTool() { tool = previousTool ?? (tool == .pen ? .eraser : .pen) }
 }

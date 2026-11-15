@@ -28,7 +28,7 @@ struct GlassMenuButton: UIViewRepresentable {
         config.contentInsets = .zero
         let button = UIButton(configuration: config)
         button.showsMenuAsPrimaryAction = true
-        button.accessibilityLabel = "Mai multe"
+        button.accessibilityLabel = "More"
 
         let coordinator = context.coordinator
         coordinator.elements = elements

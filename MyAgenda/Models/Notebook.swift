@@ -12,7 +12,7 @@ import SwiftData
 @Model
 final class Notebook {
     var id: UUID = UUID()
-    var title: String = "Agendă"
+    var title: String = "Agenda"
     var accentHex: String = "#0A84FF"
     var pageStyleRaw: String = PageStyle.dots.rawValue
     /// Paper color of every page that doesn't choose its own.
@@ -23,7 +23,7 @@ final class Notebook {
     @Relationship(deleteRule: .cascade, inverse: \JournalPage.notebook)
     var pages: [JournalPage]? = []
 
-    init(title: String = "Agendă",
+    init(title: String = "Agenda",
          accentHex: String = "#0A84FF",
          pageStyle: PageStyle = .dots,
          sortIndex: Int = 0) {
