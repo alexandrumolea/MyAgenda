@@ -43,6 +43,8 @@ struct WelcomeTour: View {
         static let pad: [Card] = [
             Card(picture: .pagesUpright, title: "Many pages at once",
                  text: "Hold iPad upright and tap All Pages to see many of them together."),
+            Card(picture: .pinch, title: "Or just pinch",
+                 text: "Pinch a page with two fingers to see all your pages."),
             Card(picture: .pagesSideways, title: "Leaf through it like a paper agenda",
                  text: "Turn iPad sideways in All Pages and swipe, two pages at a time."),
             calendar,

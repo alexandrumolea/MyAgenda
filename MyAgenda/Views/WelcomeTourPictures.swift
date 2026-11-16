@@ -9,7 +9,7 @@
 import SwiftUI
 
 enum TourPicture {
-    case pagesUpright, pagesSideways, calendar, squeeze, toolbar, moveBox, moveTimer, paste
+    case pagesUpright, pinch, pagesSideways, calendar, squeeze, toolbar, moveBox, moveTimer, paste
     case hideBar, hideTools, clock, tags, sync
 }
 
@@ -32,6 +32,7 @@ struct TourPictureView: View {
         Group {
             switch picture {
             case .pagesUpright: pagesUpright
+            case .pinch: pinch
             case .pagesSideways: pagesSideways
             case .calendar: calendar
             case .squeeze: squeeze
@@ -76,6 +77,30 @@ struct TourPictureView: View {
                 PageMark(highlighted: i == 4, accent: accent)
                     .frame(width: 18, height: 24)
                     .position(x: 110 + CGFloat(i % 3 - 1) * 25, y: 78 + CGFloat(i / 3 - 1) * 32)
+            }
+        }
+    }
+
+    /// iPad only: two fingers pinching a page in open all the pages.
+    @ViewBuilder private var pinch: some View {
+        let s = screen
+        ZStack {
+            screenOutline
+            PageMark(highlighted: false, accent: accent)
+                .frame(width: s.width * 0.3, height: s.height * 0.75)
+                .position(s.at(0.3, 0.5))
+            TouchMark(hold: false)
+                .position(s.at(0.16, 0.2))
+            TouchMark(hold: false)
+                .position(s.at(0.44, 0.8))
+            DragArrow(from: s.at(0.2, 0.28), to: s.at(0.26, 0.41))
+                .stroke(accent, style: .accent)
+            DragArrow(from: s.at(0.4, 0.72), to: s.at(0.34, 0.59))
+                .stroke(accent, style: .accent)
+            ForEach(0..<6, id: \.self) { i in
+                PageMark(highlighted: i == 1, accent: accent)
+                    .frame(width: 16, height: 22)
+                    .position(s.at(0.74 + CGFloat(i % 3 - 1) * 0.13, 0.5 + CGFloat(i / 3 * 2 - 1) * 0.12))
             }
         }
     }
